@@ -1255,7 +1255,7 @@ bytea_int2(PG_FUNCTION_ARGS)
 
 	/* Check that the byte array is not too long */
 	if (len > sizeof(result))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				errmsg("smallint out of range"));
 
@@ -1280,7 +1280,7 @@ bytea_int4(PG_FUNCTION_ARGS)
 
 	/* Check that the byte array is not too long */
 	if (len > sizeof(result))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				errmsg("integer out of range"));
 
@@ -1305,7 +1305,7 @@ bytea_int8(PG_FUNCTION_ARGS)
 
 	/* Check that the byte array is not too long */
 	if (len > sizeof(result))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				errmsg("bigint out of range"));
 
