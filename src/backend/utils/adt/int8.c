@@ -1251,7 +1251,7 @@ int84(PG_FUNCTION_ARGS)
 	int64		arg = PG_GETARG_INT64(0);
 
 	if (unlikely(arg < PG_INT32_MIN) || unlikely(arg > PG_INT32_MAX))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("integer out of range")));
 
@@ -1272,7 +1272,7 @@ int82(PG_FUNCTION_ARGS)
 	int64		arg = PG_GETARG_INT64(0);
 
 	if (unlikely(arg < PG_INT16_MIN) || unlikely(arg > PG_INT16_MAX))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("smallint out of range")));
 
@@ -1355,7 +1355,7 @@ i8tooid(PG_FUNCTION_ARGS)
 	int64		arg = PG_GETARG_INT64(0);
 
 	if (unlikely(arg < 0) || unlikely(arg > PG_UINT32_MAX))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("OID out of range")));
 
