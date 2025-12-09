@@ -100,25 +100,25 @@ static void init_degree_constants(void);
  * This does mean that you don't get a useful error location indicator.
  */
 pg_noinline void
-float_overflow_error(void)
+float_overflow_error(struct Node *escontext)
 {
-	ereport(ERROR,
+	errsave(escontext,
 			(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 			 errmsg("value out of range: overflow")));
 }
 
 pg_noinline void
-float_underflow_error(void)
+float_underflow_error(struct Node *escontext)
 {
-	ereport(ERROR,
+	errsave(escontext,
 			(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 			 errmsg("value out of range: underflow")));
 }
 
 pg_noinline void
-float_zero_divide_error(void)
+float_zero_divide_error(struct Node *escontext)
 {
-	ereport(ERROR,
+	errsave(escontext,
 			(errcode(ERRCODE_DIVISION_BY_ZERO),
 			 errmsg("division by zero")));
 }
@@ -1477,9 +1477,9 @@ dsqrt(PG_FUNCTION_ARGS)
 
 	result = sqrt(arg1);
 	if (unlikely(isinf(result)) && !isinf(arg1))
-		float_overflow_error();
+		float_overflow_error(NULL);
 	if (unlikely(result == 0.0) && arg1 != 0.0)
-		float_underflow_error();
+		float_underflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -1496,9 +1496,9 @@ dcbrt(PG_FUNCTION_ARGS)
 
 	result = cbrt(arg1);
 	if (unlikely(isinf(result)) && !isinf(arg1))
-		float_overflow_error();
+		float_overflow_error(NULL);
 	if (unlikely(result == 0.0) && arg1 != 0.0)
-		float_underflow_error();
+		float_underflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -1634,24 +1634,24 @@ dpow(PG_FUNCTION_ARGS)
 				if (absx == 1.0)
 					result = 1.0;
 				else if (arg2 >= 0.0 ? (absx > 1.0) : (absx < 1.0))
-					float_overflow_error();
+					float_overflow_error(NULL);
 				else
-					float_underflow_error();
+					float_underflow_error(NULL);
 			}
 		}
 		else if (errno == ERANGE)
 		{
 			if (result != 0.0)
-				float_overflow_error();
+				float_overflow_error(NULL);
 			else
-				float_underflow_error();
+				float_underflow_error(NULL);
 		}
 		else
 		{
 			if (unlikely(isinf(result)))
-				float_overflow_error();
+				float_overflow_error(NULL);
 			if (unlikely(result == 0.0) && arg1 != 0.0)
-				float_underflow_error();
+				float_underflow_error(NULL);
 		}
 	}
 
@@ -1691,14 +1691,14 @@ dexp(PG_FUNCTION_ARGS)
 		if (unlikely(errno == ERANGE))
 		{
 			if (result != 0.0)
-				float_overflow_error();
+				float_overflow_error(NULL);
 			else
-				float_underflow_error();
+				float_underflow_error(NULL);
 		}
 		else if (unlikely(isinf(result)))
-			float_overflow_error();
+			float_overflow_error(NULL);
 		else if (unlikely(result == 0.0))
-			float_underflow_error();
+			float_underflow_error(NULL);
 	}
 
 	PG_RETURN_FLOAT8(result);
@@ -1729,9 +1729,9 @@ dlog1(PG_FUNCTION_ARGS)
 
 	result = log(arg1);
 	if (unlikely(isinf(result)) && !isinf(arg1))
-		float_overflow_error();
+		float_overflow_error(NULL);
 	if (unlikely(result == 0.0) && arg1 != 1.0)
-		float_underflow_error();
+		float_underflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -1762,9 +1762,9 @@ dlog10(PG_FUNCTION_ARGS)
 
 	result = log10(arg1);
 	if (unlikely(isinf(result)) && !isinf(arg1))
-		float_overflow_error();
+		float_overflow_error(NULL);
 	if (unlikely(result == 0.0) && arg1 != 1.0)
-		float_underflow_error();
+		float_underflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -1795,7 +1795,7 @@ dacos(PG_FUNCTION_ARGS)
 
 	result = acos(arg1);
 	if (unlikely(isinf(result)))
-		float_overflow_error();
+		float_overflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -1826,7 +1826,7 @@ dasin(PG_FUNCTION_ARGS)
 
 	result = asin(arg1);
 	if (unlikely(isinf(result)))
-		float_overflow_error();
+		float_overflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -1852,7 +1852,7 @@ datan(PG_FUNCTION_ARGS)
 	 */
 	result = atan(arg1);
 	if (unlikely(isinf(result)))
-		float_overflow_error();
+		float_overflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -1878,7 +1878,7 @@ datan2(PG_FUNCTION_ARGS)
 	 */
 	result = atan2(arg1, arg2);
 	if (unlikely(isinf(result)))
-		float_overflow_error();
+		float_overflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -1919,7 +1919,7 @@ dcos(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("input is out of range")));
 	if (unlikely(isinf(result)))
-		float_overflow_error();
+		float_overflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -1974,7 +1974,7 @@ dsin(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("input is out of range")));
 	if (unlikely(isinf(result)))
-		float_overflow_error();
+		float_overflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -2154,7 +2154,7 @@ dacosd(PG_FUNCTION_ARGS)
 		result = 90.0 + asind_q1(-arg1);
 
 	if (unlikely(isinf(result)))
-		float_overflow_error();
+		float_overflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -2191,7 +2191,7 @@ dasind(PG_FUNCTION_ARGS)
 		result = -asind_q1(-arg1);
 
 	if (unlikely(isinf(result)))
-		float_overflow_error();
+		float_overflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -2223,7 +2223,7 @@ datand(PG_FUNCTION_ARGS)
 	result = (atan_arg1 / atan_1_0) * 45.0;
 
 	if (unlikely(isinf(result)))
-		float_overflow_error();
+		float_overflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -2259,7 +2259,7 @@ datan2d(PG_FUNCTION_ARGS)
 	result = (atan2_arg1_arg2 / atan_1_0) * 45.0;
 
 	if (unlikely(isinf(result)))
-		float_overflow_error();
+		float_overflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -2382,7 +2382,7 @@ dcosd(PG_FUNCTION_ARGS)
 	result = sign * cosd_q1(arg1);
 
 	if (unlikely(isinf(result)))
-		float_overflow_error();
+		float_overflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -2504,7 +2504,7 @@ dsind(PG_FUNCTION_ARGS)
 	result = sign * sind_q1(arg1);
 
 	if (unlikely(isinf(result)))
-		float_overflow_error();
+		float_overflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -2662,7 +2662,7 @@ dcosh(PG_FUNCTION_ARGS)
 		result = get_float8_infinity();
 
 	if (unlikely(result == 0.0))
-		float_underflow_error();
+		float_underflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -2682,7 +2682,7 @@ dtanh(PG_FUNCTION_ARGS)
 	result = tanh(arg1);
 
 	if (unlikely(isinf(result)))
-		float_overflow_error();
+		float_overflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -2782,7 +2782,7 @@ derf(PG_FUNCTION_ARGS)
 	result = erf(arg1);
 
 	if (unlikely(isinf(result)))
-		float_overflow_error();
+		float_overflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -2802,7 +2802,7 @@ derfc(PG_FUNCTION_ARGS)
 	result = erfc(arg1);
 
 	if (unlikely(isinf(result)))
-		float_overflow_error();
+		float_overflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -2831,7 +2831,7 @@ dgamma(PG_FUNCTION_ARGS)
 		/* Per POSIX, an input of -Inf causes a domain error */
 		if (arg1 < 0)
 		{
-			float_overflow_error();
+			float_overflow_error(NULL);
 			result = get_float8_nan();	/* keep compiler quiet */
 		}
 		else
@@ -2853,12 +2853,12 @@ dgamma(PG_FUNCTION_ARGS)
 		if (errno != 0 || isinf(result) || isnan(result))
 		{
 			if (result != 0.0)
-				float_overflow_error();
+				float_overflow_error(NULL);
 			else
-				float_underflow_error();
+				float_underflow_error(NULL);
 		}
 		else if (result == 0.0)
-			float_underflow_error();
+			float_underflow_error(NULL);
 	}
 
 	PG_RETURN_FLOAT8(result);
@@ -2896,7 +2896,7 @@ dlgamma(PG_FUNCTION_ARGS)
 	 * to report overflow, but it should never underflow.
 	 */
 	if (errno == ERANGE || (isinf(result) && !isinf(arg1)))
-		float_overflow_error();
+		float_overflow_error(NULL);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -3036,7 +3036,7 @@ float8_combine(PG_FUNCTION_ARGS)
 		tmp = Sx1 / N1 - Sx2 / N2;
 		Sxx = Sxx1 + Sxx2 + N1 * N2 * tmp * tmp / N;
 		if (unlikely(isinf(Sxx)) && !isinf(Sxx1) && !isinf(Sxx2))
-			float_overflow_error();
+			float_overflow_error(NULL);
 	}
 
 	/*
@@ -3103,7 +3103,7 @@ float8_accum(PG_FUNCTION_ARGS)
 		if (isinf(Sx) || isinf(Sxx))
 		{
 			if (!isinf(transvalues[1]) && !isinf(newval))
-				float_overflow_error();
+				float_overflow_error(NULL);
 
 			Sxx = get_float8_nan();
 		}
@@ -3186,7 +3186,7 @@ float4_accum(PG_FUNCTION_ARGS)
 		if (isinf(Sx) || isinf(Sxx))
 		{
 			if (!isinf(transvalues[1]) && !isinf(newval))
-				float_overflow_error();
+				float_overflow_error(NULL);
 
 			Sxx = get_float8_nan();
 		}
@@ -3453,7 +3453,7 @@ float8_regr_accum(PG_FUNCTION_ARGS)
 				(isinf(Sxy) &&
 				 !isinf(transvalues[1]) && !isinf(newvalX) &&
 				 !isinf(transvalues[3]) && !isinf(newvalY)))
-				float_overflow_error();
+				float_overflow_error(NULL);
 
 			if (isinf(Sxx))
 				Sxx = get_float8_nan();
@@ -3626,15 +3626,15 @@ float8_regr_combine(PG_FUNCTION_ARGS)
 		tmp1 = Sx1 / N1 - Sx2 / N2;
 		Sxx = Sxx1 + Sxx2 + N1 * N2 * tmp1 * tmp1 / N;
 		if (unlikely(isinf(Sxx)) && !isinf(Sxx1) && !isinf(Sxx2))
-			float_overflow_error();
+			float_overflow_error(NULL);
 		Sy = float8_pl(Sy1, Sy2);
 		tmp2 = Sy1 / N1 - Sy2 / N2;
 		Syy = Syy1 + Syy2 + N1 * N2 * tmp2 * tmp2 / N;
 		if (unlikely(isinf(Syy)) && !isinf(Syy1) && !isinf(Syy2))
-			float_overflow_error();
+			float_overflow_error(NULL);
 		Sxy = Sxy1 + Sxy2 + N1 * N2 * tmp1 * tmp2 / N;
 		if (unlikely(isinf(Sxy)) && !isinf(Sxy1) && !isinf(Sxy2))
-			float_overflow_error();
+			float_overflow_error(NULL);
 		if (float8_eq(Cx1, Cx2))
 			Cx = Cx1;
 		else
