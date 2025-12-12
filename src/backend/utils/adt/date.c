@@ -2098,7 +2098,7 @@ interval_time(PG_FUNCTION_ARGS)
 	TimeADT		result;
 
 	if (INTERVAL_NOT_FINITE(span))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
 				 errmsg("cannot convert infinite interval to time")));
 
