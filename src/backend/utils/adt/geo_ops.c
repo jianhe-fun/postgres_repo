@@ -77,7 +77,8 @@ enum path_delim
 
 /* Routines for points */
 static inline void point_construct(Point *result, float8 x, float8 y);
-static inline void point_add_point(Point *result, Point *pt1, Point *pt2);
+static inline void point_add_point(Point *result, Point *pt1, Point *pt2,
+								   Node *escontext);
 static inline void point_sub_point(Point *result, Point *pt1, Point *pt2);
 static inline void point_mul_point(Point *result, Point *pt1, Point *pt2);
 static inline void point_div_point(Point *result, Point *pt1, Point *pt2);
@@ -108,7 +109,7 @@ static float8 lseg_closept_lseg(Point *result, LSEG *on_lseg, LSEG *to_lseg);
 
 /* Routines for boxes */
 static inline void box_construct(BOX *result, Point *pt1, Point *pt2);
-static void box_cn(Point *center, BOX *box);
+static bool box_cn(Point *center, BOX *box, Node *escontext);
 static bool box_ov(BOX *box1, BOX *box2);
 static float8 box_ar(BOX *box);
 static float8 box_ht(BOX *box);
@@ -125,7 +126,7 @@ static float8 circle_ar(CIRCLE *circle);
 
 /* Routines for polygons */
 static void make_bound_box(POLYGON *poly);
-static void poly_to_circle(CIRCLE *result, POLYGON *poly);
+static bool poly_to_circle(CIRCLE *result, POLYGON *poly, Node *escontext);
 static bool lseg_inside_poly(Point *a, Point *b, POLYGON *poly, int start);
 static bool poly_contain_poly(POLYGON *contains_poly, POLYGON *contained_poly);
 static bool plist_same(int npts, Point *p1, Point *p2);
@@ -836,8 +837,8 @@ box_distance(PG_FUNCTION_ARGS)
 	Point		a,
 				b;
 
-	box_cn(&a, box1);
-	box_cn(&b, box2);
+	(void) box_cn(&a, box1, fcinfo->context);
+	(void) box_cn(&b, box2, fcinfo->context);
 
 	PG_RETURN_FLOAT8(point_dt(&a, &b, fcinfo->context));
 }
@@ -851,7 +852,8 @@ box_center(PG_FUNCTION_ARGS)
 	BOX		   *box = PG_GETARG_BOX_P(0);
 	Point	   *result = palloc_object(Point);
 
-	box_cn(result, box);
+	if (!box_cn(result, box, fcinfo->context))
+		PG_RETURN_NULL();
 
 	PG_RETURN_POINT_P(result);
 }
@@ -868,13 +870,30 @@ box_ar(BOX *box)
 
 /*		box_cn	-		stores the centerpoint of the box into *center.
  */
-static void
-box_cn(Point *center, BOX *box)
+static bool
+box_cn(Point *center, BOX *box, Node *escontext)
 {
-	center->x = float8_div(float8_pl(box->high.x, box->low.x), 2.0);
-	center->y = float8_div(float8_pl(box->high.y, box->low.y), 2.0);
-}
+	float8		x;
+	float8		y;
 
+	x = float8_pl_safe(box->high.x, box->low.x, escontext);
+	if (SOFT_ERROR_OCCURRED(escontext))
+		return false;
+
+	center->x = float8_div_safe(x, 2.0, escontext);
+	if (SOFT_ERROR_OCCURRED(escontext))
+		return false;
+
+	y = float8_pl_safe(box->high.y, box->low.y, escontext);
+	if (SOFT_ERROR_OCCURRED(escontext))
+		return false;
+
+	center->y = float8_div_safe(y, 2.0, escontext);
+	if (SOFT_ERROR_OCCURRED(escontext))
+		return false;
+
+	return true;
+}
 
 /*		box_wd	-		returns the width (length) of the box
  *								  (horizontal magnitude).
@@ -2329,13 +2348,31 @@ lseg_center(PG_FUNCTION_ARGS)
 {
 	LSEG	   *lseg = PG_GETARG_LSEG_P(0);
 	Point	   *result;
+	float8		x;
+	float8		y;
 
 	result = palloc_object(Point);
 
-	result->x = float8_div(float8_pl(lseg->p[0].x, lseg->p[1].x), 2.0);
-	result->y = float8_div(float8_pl(lseg->p[0].y, lseg->p[1].y), 2.0);
+	x = float8_pl_safe(lseg->p[0].x, lseg->p[1].x, fcinfo->context);
+	if (SOFT_ERROR_OCCURRED(fcinfo->context))
+		goto fail;
+
+	result->x = float8_div_safe(x, 2.0, fcinfo->context);
+	if (SOFT_ERROR_OCCURRED(fcinfo->context))
+		goto fail;
+
+	y = float8_pl_safe(lseg->p[0].y, lseg->p[1].y, fcinfo->context);
+	if (SOFT_ERROR_OCCURRED(fcinfo->context))
+		goto fail;
+
+	result->y = float8_div_safe(y, 2.0, fcinfo->context);
+	if (SOFT_ERROR_OCCURRED(fcinfo->context))
+		goto fail;
 
 	PG_RETURN_POINT_P(result);
+
+fail:
+	PG_RETURN_NULL();
 }
 
 
@@ -3290,7 +3327,7 @@ box_interpt_lseg(Point *result, BOX *box, LSEG *lseg)
 
 	if (result != NULL)
 	{
-		box_cn(&point, box);
+		(void) box_cn(&point, box, NULL);
 		lseg_closept_point(result, lseg, &point);
 	}
 
@@ -4121,11 +4158,20 @@ construct_point(PG_FUNCTION_ARGS)
 
 
 static inline void
-point_add_point(Point *result, Point *pt1, Point *pt2)
+point_add_point(Point *result, Point *pt1, Point *pt2, Node *escontext)
 {
-	point_construct(result,
-					float8_pl(pt1->x, pt2->x),
-					float8_pl(pt1->y, pt2->y));
+	float8		x;
+	float8		y;
+
+	x = float8_pl_safe(pt1->x, pt2->x, escontext);
+	if (SOFT_ERROR_OCCURRED(escontext))
+		return;
+
+	y = float8_pl_safe(pt1->y, pt2->y, escontext);
+	if (SOFT_ERROR_OCCURRED(escontext))
+		return;
+
+	point_construct(result, x, y);
 }
 
 Datum
@@ -4137,7 +4183,7 @@ point_add(PG_FUNCTION_ARGS)
 
 	result = palloc_object(Point);
 
-	point_add_point(result, p1, p2);
+	point_add_point(result, p1, p2, fcinfo->context);
 
 	PG_RETURN_POINT_P(result);
 }
@@ -4249,8 +4295,8 @@ box_add(PG_FUNCTION_ARGS)
 
 	result = palloc_object(BOX);
 
-	point_add_point(&result->high, &box->high, p);
-	point_add_point(&result->low, &box->low, p);
+	point_add_point(&result->high, &box->high, p, fcinfo->context);
+	point_add_point(&result->low, &box->low, p, fcinfo->context);
 
 	PG_RETURN_BOX_P(result);
 }
@@ -4413,7 +4459,7 @@ path_add_pt(PG_FUNCTION_ARGS)
 	int			i;
 
 	for (i = 0; i < path->npts; i++)
-		point_add_point(&path->p[i], &path->p[i], point);
+		point_add_point(&path->p[i], &path->p[i], point, fcinfo->context);
 
 	PG_RETURN_PATH_P(path);
 }
@@ -4471,7 +4517,7 @@ path_poly(PG_FUNCTION_ARGS)
 
 	/* This is not very consistent --- other similar cases return NULL ... */
 	if (!path->closed)
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("open path cannot be converted to polygon")));
 
@@ -4521,7 +4567,9 @@ poly_center(PG_FUNCTION_ARGS)
 
 	result = palloc_object(Point);
 
-	poly_to_circle(&circle, poly);
+	if (!poly_to_circle(&circle, poly, fcinfo->context))
+		PG_RETURN_NULL();
+
 	*result = circle.center;
 
 	PG_RETURN_POINT_P(result);
@@ -4983,7 +5031,7 @@ circle_add_pt(PG_FUNCTION_ARGS)
 
 	result = palloc_object(CIRCLE);
 
-	point_add_point(&result->center, &circle->center, point);
+	point_add_point(&result->center, &circle->center, point, fcinfo->context);
 	result->radius = circle->radius;
 
 	PG_RETURN_CIRCLE_P(result);
@@ -5204,14 +5252,30 @@ circle_box(PG_FUNCTION_ARGS)
 
 	box = palloc_object(BOX);
 
-	delta = float8_div(circle->radius, sqrt(2.0));
+	delta = float8_div_safe(circle->radius, sqrt(2.0), fcinfo->context);
+	if (SOFT_ERROR_OCCURRED(fcinfo->context))
+		goto fail;
 
-	box->high.x = float8_pl(circle->center.x, delta);
-	box->low.x = float8_mi(circle->center.x, delta);
-	box->high.y = float8_pl(circle->center.y, delta);
-	box->low.y = float8_mi(circle->center.y, delta);
+	box->high.x = float8_pl_safe(circle->center.x, delta, fcinfo->context);
+	if (SOFT_ERROR_OCCURRED(fcinfo->context))
+		goto fail;
+
+	box->low.x = float8_mi_safe(circle->center.x, delta, fcinfo->context);
+	if (SOFT_ERROR_OCCURRED(fcinfo->context))
+		goto fail;
+
+	box->high.y = float8_pl_safe(circle->center.y, delta, fcinfo->context);
+	if (SOFT_ERROR_OCCURRED(fcinfo->context))
+		goto fail;
+
+	box->low.y = float8_mi_safe(circle->center.y, delta, fcinfo->context);
+	if (SOFT_ERROR_OCCURRED(fcinfo->context))
+		goto fail;
 
 	PG_RETURN_BOX_P(box);
+
+fail:
+	PG_RETURN_NULL();
 }
 
 /* box_circle()
@@ -5222,15 +5286,35 @@ box_circle(PG_FUNCTION_ARGS)
 {
 	BOX		   *box = PG_GETARG_BOX_P(0);
 	CIRCLE	   *circle;
+	float8		x;
+	float8		y;
 
 	circle = palloc_object(CIRCLE);
 
-	circle->center.x = float8_div(float8_pl(box->high.x, box->low.x), 2.0);
-	circle->center.y = float8_div(float8_pl(box->high.y, box->low.y), 2.0);
+	x = float8_pl_safe(box->high.x, box->low.x, fcinfo->context);
+	if (SOFT_ERROR_OCCURRED(fcinfo->context))
+		goto fail;
+
+	circle->center.x = float8_div_safe(x, 2.0, fcinfo->context);
+	if (SOFT_ERROR_OCCURRED(fcinfo->context))
+		goto fail;
+
+	y = float8_pl_safe(box->high.y, box->low.y, fcinfo->context);
+	if (SOFT_ERROR_OCCURRED(fcinfo->context))
+		goto fail;
+
+	circle->center.y = float8_div_safe(y, 2.0, fcinfo->context);
+	if (SOFT_ERROR_OCCURRED(fcinfo->context))
+		goto fail;
 
 	circle->radius = point_dt(&circle->center, &box->high, fcinfo->context);
+	if (SOFT_ERROR_OCCURRED(fcinfo->context))
+		goto fail;
 
 	PG_RETURN_CIRCLE_P(circle);
+
+fail:
+	PG_RETURN_NULL();
 }
 
 
@@ -5289,15 +5373,16 @@ circle_poly(PG_FUNCTION_ARGS)
 /*
  * Convert polygon to circle
  *
- * The result must be preallocated.
+ * The parameter "result" must be preallocated.
  *
  * XXX This algorithm should use weighted means of line segments
  *	rather than straight average values of points - tgl 97/01/21.
  */
-static void
-poly_to_circle(CIRCLE *result, POLYGON *poly)
+static bool
+poly_to_circle(CIRCLE *result, POLYGON *poly, Node *escontext)
 {
 	int			i;
+	float8		x;
 
 	Assert(poly->npts > 0);
 
@@ -5306,14 +5391,43 @@ poly_to_circle(CIRCLE *result, POLYGON *poly)
 	result->radius = 0;
 
 	for (i = 0; i < poly->npts; i++)
-		point_add_point(&result->center, &result->center, &poly->p[i]);
-	result->center.x = float8_div(result->center.x, poly->npts);
-	result->center.y = float8_div(result->center.y, poly->npts);
+	{
+		point_add_point(&result->center,
+						&result->center,
+						&poly->p[i],
+						escontext);
+		if (SOFT_ERROR_OCCURRED(escontext))
+			return false;
+	}
+
+	result->center.x = float8_div_safe(result->center.x,
+									   poly->npts,
+									   escontext);
+	if (SOFT_ERROR_OCCURRED(escontext))
+		return false;
+
+	result->center.y = float8_div_safe(result->center.y,
+									   poly->npts,
+									   escontext);
+	if (SOFT_ERROR_OCCURRED(escontext))
+		return false;
 
 	for (i = 0; i < poly->npts; i++)
-		result->radius = float8_pl(result->radius,
-								   point_dt(&poly->p[i], &result->center, NULL));
-	result->radius = float8_div(result->radius, poly->npts);
+	{
+		x = point_dt(&poly->p[i], &result->center, escontext);
+		if (SOFT_ERROR_OCCURRED(escontext))
+			return false;
+
+		result->radius = float8_pl_safe(result->radius, x, escontext);
+		if (SOFT_ERROR_OCCURRED(escontext))
+			return false;
+	}
+
+	result->radius = float8_div_safe(result->radius, poly->npts, escontext);
+	if (SOFT_ERROR_OCCURRED(escontext))
+		return false;
+
+	return true;
 }
 
 Datum
@@ -5324,7 +5438,8 @@ poly_circle(PG_FUNCTION_ARGS)
 
 	result = palloc_object(CIRCLE);
 
-	poly_to_circle(result, poly);
+	if (!poly_to_circle(result, poly, fcinfo->context))
+		PG_RETURN_NULL();
 
 	PG_RETURN_CIRCLE_P(result);
 }
