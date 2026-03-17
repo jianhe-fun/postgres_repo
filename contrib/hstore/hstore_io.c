@@ -739,20 +739,20 @@ hstore_from_array(PG_FUNCTION_ARGS)
 
 		case 1:
 			if ((ARR_DIMS(in_array)[0]) % 2)
-				ereport(ERROR,
+				ereturn(fcinfo->context, (Datum) 0,
 						(errcode(ERRCODE_ARRAY_SUBSCRIPT_ERROR),
 						 errmsg("array must have even number of elements")));
 			break;
 
 		case 2:
 			if ((ARR_DIMS(in_array)[1]) != 2)
-				ereport(ERROR,
+				ereturn(fcinfo->context, (Datum) 0,
 						(errcode(ERRCODE_ARRAY_SUBSCRIPT_ERROR),
 						 errmsg("array must have two columns")));
 			break;
 
 		default:
-			ereport(ERROR,
+				ereturn(fcinfo->context, (Datum) 0,
 					(errcode(ERRCODE_ARRAY_SUBSCRIPT_ERROR),
 					 errmsg("wrong number of array subscripts")));
 	}
@@ -773,7 +773,7 @@ hstore_from_array(PG_FUNCTION_ARGS)
 	for (i = 0; i < count; ++i)
 	{
 		if (in_nulls[i * 2])
-			ereport(ERROR,
+			ereturn(fcinfo->context, (Datum) 0,
 					(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
 					 errmsg("null value not allowed for hstore key")));
 

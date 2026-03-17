@@ -232,7 +232,7 @@ AS 'MODULE_PATHNAME', 'hstore_from_array'
 LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
 CREATE CAST (text[] AS hstore)
-  WITH FUNCTION hstore(text[]);
+  WITH SAFE FUNCTION hstore(text[]);
 
 CREATE FUNCTION hstore_to_json(hstore)
 RETURNS json
@@ -240,7 +240,7 @@ AS 'MODULE_PATHNAME', 'hstore_to_json'
 LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
 CREATE CAST (hstore AS json)
-  WITH FUNCTION hstore_to_json(hstore);
+  WITH SAFE FUNCTION hstore_to_json(hstore);
 
 CREATE FUNCTION hstore_to_json_loose(hstore)
 RETURNS json
@@ -253,7 +253,7 @@ AS 'MODULE_PATHNAME', 'hstore_to_jsonb'
 LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
 CREATE CAST (hstore AS jsonb)
-  WITH FUNCTION hstore_to_jsonb(hstore);
+  WITH SAFE FUNCTION hstore_to_jsonb(hstore);
 
 CREATE FUNCTION hstore_to_jsonb_loose(hstore)
 RETURNS jsonb
