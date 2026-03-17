@@ -2256,6 +2256,33 @@ llvm_compile_expr(ExprState *state)
 				LLVMBuildBr(b, opblocks[opno + 1]);
 				break;
 
+			case EEOP_SAFETYPE_CAST:
+				{
+					SafeTypeCastState *stcstate = op->d.stcexpr.stcstate;
+
+					if (!SOFT_ERROR_OCCURRED(&stcstate->escontext))
+						LLVMBuildBr(b, opblocks[stcstate->jump_end]);
+					else
+					{
+						/*
+						 * Reset for next use such as for catching errors when
+						 * coercing a expression.
+						 */
+						stcstate->escontext.error_occurred = false;
+						stcstate->escontext.details_wanted = false;
+
+						/* set resnull to true */
+						LLVMBuildStore(b, l_sbool_const(1), v_resnullp);
+
+						/* reset resvalue */
+						LLVMBuildStore(b, l_datum_const(0), v_resvaluep);
+
+						LLVMBuildBr(b, opblocks[opno + 1]);
+					}
+
+					break;
+				}
+
 			case EEOP_JSONEXPR_PATH:
 				{
 					JsonExprState *jsestate = op->d.jsonexpr.jsestate;

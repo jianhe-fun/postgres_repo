@@ -82,6 +82,28 @@ coerce_to_target_type(ParseState *pstate, Node *expr, Oid exprtype,
 					  CoercionForm cformat,
 					  int location)
 {
+	return coerce_to_target_type_extended(pstate, expr, exprtype,
+										  targettype, targettypmod,
+										  ccontext,
+										  cformat,
+										  location,
+										  NULL);
+}
+
+/*
+ * escontext: If non-NULL, safely coerces 'expr' to the target type
+ * without raising an error. Returns NULL if the coercion fails.
+ *
+ * See 'coerce_to_target_type' above for details on other parameters.
+ */
+Node *
+coerce_to_target_type_extended(ParseState *pstate, Node *expr, Oid exprtype,
+							   Oid targettype, int32 targettypmod,
+							   CoercionContext ccontext,
+							   CoercionForm cformat,
+							   int location,
+							   Node *escontext)
+{
 	Node	   *result;
 	Node	   *origexpr;
 
@@ -102,9 +124,15 @@ coerce_to_target_type(ParseState *pstate, Node *expr, Oid exprtype,
 	while (expr && IsA(expr, CollateExpr))
 		expr = (Node *) ((CollateExpr *) expr)->arg;
 
-	result = coerce_type(pstate, expr, exprtype,
-						 targettype, targettypmod,
-						 ccontext, cformat, location);
+	result = coerce_type_extended(pstate, expr, exprtype,
+								  targettype, targettypmod,
+								  ccontext,
+								  cformat,
+								  location,
+								  escontext);
+
+	if (SOFT_ERROR_OCCURRED(escontext))
+		return NULL;
 
 	/*
 	 * If the target is a fixed-length type, it may need a length coercion as
@@ -158,6 +186,18 @@ Node *
 coerce_type(ParseState *pstate, Node *node,
 			Oid inputTypeId, Oid targetTypeId, int32 targetTypeMod,
 			CoercionContext ccontext, CoercionForm cformat, int location)
+{
+	return coerce_type_extended(pstate, node,
+								inputTypeId, targetTypeId, targetTypeMod,
+								ccontext, cformat, location,
+								NULL);
+}
+
+Node *
+coerce_type_extended(ParseState *pstate, Node *node,
+					 Oid inputTypeId, Oid targetTypeId, int32 targetTypeMod,
+					 CoercionContext ccontext, CoercionForm cformat, int location,
+					 Node *escontext)
 {
 	Node	   *result;
 	CoercionPathType pathtype;
@@ -256,6 +296,7 @@ coerce_type(ParseState *pstate, Node *node,
 		int32		inputTypeMod;
 		Type		baseType;
 		ParseCallbackState pcbstate;
+		char	   *string = NULL;
 
 		/*
 		 * If the target type is a domain, we want to call its base type's
@@ -309,13 +350,21 @@ coerce_type(ParseState *pstate, Node *node,
 		 * as CSTRING.
 		 */
 		if (!con->constisnull)
-			newcon->constvalue = stringTypeDatum(baseType,
-												 DatumGetCString(con->constvalue),
-												 inputTypeMod);
-		else
-			newcon->constvalue = stringTypeDatum(baseType,
-												 NULL,
-												 inputTypeMod);
+			string = DatumGetCString(con->constvalue);
+
+		if (!stringTypeDatumSafe(baseType,
+								 string,
+								 inputTypeMod,
+								 escontext,
+								 &newcon->constvalue))
+		{
+			/* UNKNOWN Const cannot coerce to targetType, exit now */
+			cancel_parser_errposition_callback(&pcbstate);
+
+			ReleaseSysCache(baseType);
+
+			return NULL;
+		}
 
 		/*
 		 * If it's a varlena value, force it to be in non-expanded
