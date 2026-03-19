@@ -48,7 +48,8 @@
 ObjectAddress
 CastCreate(Oid sourcetypeid, Oid targettypeid,
 		   Oid funcid, Oid incastid, Oid outcastid,
-		   char castcontext, char castmethod, DependencyType behavior)
+		   char castcontext, char castmethod, bool casterrorsafe,
+		   DependencyType behavior)
 {
 	Relation	relation;
 	HeapTuple	tuple;
@@ -84,6 +85,7 @@ CastCreate(Oid sourcetypeid, Oid targettypeid,
 	values[Anum_pg_cast_castfunc - 1] = ObjectIdGetDatum(funcid);
 	values[Anum_pg_cast_castcontext - 1] = CharGetDatum(castcontext);
 	values[Anum_pg_cast_castmethod - 1] = CharGetDatum(castmethod);
+	values[Anum_pg_cast_casterrorsafe - 1] = BoolGetDatum(casterrorsafe);
 
 	tuple = heap_form_tuple(RelationGetDescr(relation), values, nulls);
 

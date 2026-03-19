@@ -81,6 +81,12 @@ NOTICE:  drop cascades to cast from integer to casttesttype
 -- Try it with a function that requires an implicit cast
 CREATE FUNCTION bar_int4_text(int4) RETURNS text LANGUAGE SQL AS
 $$ SELECT ('bar'::text || $1::text); $$;
+CREATE FUNCTION bar_int4_text_plpg(int4) RETURNS text LANGUAGE plpgsql AS
+$$ BEGIN RETURN ('bar'::text || $1::text); END $$;
+CREATE CAST (int4 AS casttesttype) WITH SAFE FUNCTION bar_int4_text(int4) AS IMPLICIT; -- error
+ERROR:  safe type cast functions are only supported for C and internal languages
+CREATE CAST (int4 AS casttesttype) WITH SAFE FUNCTION bar_int4_text_plpg(int4) AS IMPLICIT; -- error
+ERROR:  safe type cast functions are only supported for C and internal languages
 CREATE CAST (int4 AS casttesttype) WITH FUNCTION bar_int4_text(int4) AS IMPLICIT;
 SELECT 1234::int4::casttesttype; -- Should work now
  casttesttype 
@@ -92,7 +98,7 @@ SELECT CAST(1234::int4 AS casttesttype DEFAULT NULL ON CONVERSION ERROR); -- err
 ERROR:  cannot cast type integer to casttesttype when DEFAULT expression is specified in CAST ... ON CONVERSION ERROR
 LINE 1: SELECT CAST(1234::int4 AS casttesttype DEFAULT NULL ON CONVE...
                     ^
-HINT:  Safe type cast for user-defined types are not yet supported.
+HINT:  Explicit cast is defined but definition is not error safe.
 -- check dependencies generated for that
 SELECT pg_describe_object(classid, objid, objsubid) as obj,
        pg_describe_object(refclassid, refobjid, refobjsubid) as objref,
