@@ -605,6 +605,7 @@ makeFuncExpr(Oid funcid, Oid rettype, List *args,
 	funcexpr->funccollid = funccollid;
 	funcexpr->inputcollid = inputcollid;
 	funcexpr->args = args;
+	funcexpr->errorsafe = false;
 	funcexpr->location = -1;
 
 	return funcexpr;

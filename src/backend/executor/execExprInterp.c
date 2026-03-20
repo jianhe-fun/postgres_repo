@@ -570,6 +570,7 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 		&&CASE_EEOP_XMLEXPR,
 		&&CASE_EEOP_JSON_CONSTRUCTOR,
 		&&CASE_EEOP_IS_JSON,
+		&&CASE_EEOP_SAFETYPE_CAST,
 		&&CASE_EEOP_JSONEXPR_PATH,
 		&&CASE_EEOP_JSONEXPR_COERCION,
 		&&CASE_EEOP_JSONEXPR_COERCION_FINISH,
@@ -1926,6 +1927,28 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 			ExecEvalJsonIsPredicate(state, op);
 
 			EEO_NEXT();
+		}
+
+		EEO_CASE(EEOP_SAFETYPE_CAST)
+		{
+			SafeTypeCastState *stcstate = op->d.stcexpr.stcstate;
+
+			if (!SOFT_ERROR_OCCURRED(&stcstate->escontext))
+				EEO_JUMP(stcstate->jump_end);
+			else
+			{
+				*op->resvalue = (Datum) 0;
+				*op->resnull = true;
+
+				/*
+				 * Reset for next use such as for catching errors when
+				 * coercing a expression.
+				 */
+				stcstate->escontext.error_occurred = false;
+				stcstate->escontext.details_wanted = false;
+
+				EEO_NEXT();
+			}
 		}
 
 		EEO_CASE(EEOP_JSONEXPR_PATH)
@@ -3646,6 +3669,12 @@ ExecEvalArrayCoerce(ExprState *state, ExprEvalStep *op, ExprContext *econtext)
 							  econtext,
 							  op->d.arraycoerce.resultelemtype,
 							  op->d.arraycoerce.amstate);
+
+	if (SOFT_ERROR_OCCURRED(op->d.arraycoerce.elemexprstate->escontext))
+	{
+		*op->resvalue = (Datum) 0;
+		*op->resnull = true;
+	}
 }
 
 /*

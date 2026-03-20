@@ -2675,7 +2675,8 @@ estimate_expression_value(PlannerInfo *root, Node *node)
 	((Node *) evaluate_expr((Expr *) (node), \
 							exprType((Node *) (node)), \
 							exprTypmod((Node *) (node)), \
-							exprCollation((Node *) (node))))
+							exprCollation((Node *) (node)), \
+							NULL))
 
 /*
  * Recursive guts of eval_const_expressions/estimate_expression_value
@@ -3267,6 +3268,37 @@ eval_const_expressions_mutator(Node *node,
 												  copyObject(jve->format));
 			}
 
+		case T_SafeTypeCastExpr:
+			{
+				SafeTypeCastExpr *newexpr;
+
+				SafeTypeCastExpr *stc = castNode(SafeTypeCastExpr, node);
+
+				Node	   *source = (Node *) stc->source;
+				Node	   *defexpr = (Node *) stc->defexpr;
+
+				source = eval_const_expressions_mutator(source,
+														context);
+
+				defexpr = eval_const_expressions_mutator(defexpr,
+														 context);
+
+				/*
+				 * Defer constant folding for castexpr. Evaluating
+				 * recognizable constants at this stage is not error-safe and
+				 * may lead to premature errors.
+				 */
+				newexpr = makeNode(SafeTypeCastExpr);
+				newexpr->source = (Expr *) source;
+				newexpr->castexpr = (Expr *) stc->castexpr;
+				newexpr->defexpr = (Expr *) defexpr;
+				newexpr->resulttype = stc->resulttype;
+				newexpr->resulttypmod = stc->resulttypmod;
+				newexpr->resultcollid = stc->resultcollid;
+
+				return (Node *) newexpr;
+			}
+
 		case T_SubPlan:
 		case T_AlternativeSubPlan:
 
@@ -3698,7 +3730,8 @@ eval_const_expressions_mutator(Node *node,
 					return (Node *) evaluate_expr((Expr *) svf,
 												  svf->type,
 												  svf->typmod,
-												  InvalidOid);
+												  InvalidOid,
+												  NULL);
 				else
 					return copyObject((Node *) svf);
 			}
@@ -5229,7 +5262,7 @@ evaluate_function(Oid funcid, Oid result_type, int32 result_typmod,
 	newexpr->location = -1;
 
 	return evaluate_expr((Expr *) newexpr, result_type, result_typmod,
-						 result_collid);
+						 result_collid, NULL);
 }
 
 /*
@@ -5683,10 +5716,13 @@ sql_inline_error_callback(void *arg)
  *
  * We use the executor's routine ExecEvalExpr() to avoid duplication of
  * code and ensure we get the same result as the executor would get.
+ *
+ * When escontext is non-NULL, safely evaluates the constant expression.
+ * Returns NULL on failure rather than throwing an error.
  */
 Expr *
 evaluate_expr(Expr *expr, Oid result_type, int32 result_typmod,
-			  Oid result_collation)
+			  Oid result_collation, Node *escontext)
 {
 	EState	   *estate;
 	ExprState  *exprstate;
@@ -5711,7 +5747,7 @@ evaluate_expr(Expr *expr, Oid result_type, int32 result_typmod,
 	 * Prepare expr for execution.  (Note: we can't use ExecPrepareExpr
 	 * because it'd result in recursively invoking eval_const_expressions.)
 	 */
-	exprstate = ExecInitExpr(expr, NULL);
+	exprstate = ExecInitExprWithContext(expr, NULL, escontext);
 
 	/*
 	 * And evaluate it.
@@ -5730,6 +5766,13 @@ evaluate_expr(Expr *expr, Oid result_type, int32 result_typmod,
 
 	/* Get back to outer memory context */
 	MemoryContextSwitchTo(oldcontext);
+
+	if (SOFT_ERROR_OCCURRED(exprstate->escontext))
+	{
+		FreeExecutorState(estate);
+
+		return NULL;
+	}
 
 	/*
 	 * Must copy result out of sub-context used by expression eval.
