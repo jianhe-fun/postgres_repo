@@ -866,7 +866,8 @@ timestamptz_scale(PG_FUNCTION_ARGS)
 
 	result = timestamp;
 
-	AdjustTimestampForTypmod(&result, typmod, NULL);
+	if (!AdjustTimestampForTypmod(&result, typmod, fcinfo->context))
+		PG_RETURN_NULL();
 
 	PG_RETURN_TIMESTAMPTZ(result);
 }
@@ -6485,8 +6486,13 @@ Datum
 timestamptz_timestamp(PG_FUNCTION_ARGS)
 {
 	TimestampTz timestamp = PG_GETARG_TIMESTAMPTZ(0);
+	Timestamp	result;
 
-	PG_RETURN_TIMESTAMP(timestamptz2timestamp(timestamp));
+	result = timestamptz2timestamp_safe(timestamp, fcinfo->context);
+	if (unlikely(SOFT_ERROR_OCCURRED(fcinfo->context)))
+		PG_RETURN_NULL();
+
+	PG_RETURN_TIMESTAMP(result);
 }
 
 /*
