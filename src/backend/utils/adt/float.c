@@ -1216,9 +1216,14 @@ dtof(PG_FUNCTION_ARGS)
 
 	result = (float4) num;
 	if (unlikely(isinf(result)) && !isinf(num))
-		float_overflow_error();
+		ereturn(fcinfo->context, (Datum) 0,
+				errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+				errmsg("value out of range: overflow"));
+
 	if (unlikely(result == 0.0f) && num != 0.0)
-		float_underflow_error();
+		ereturn(fcinfo->context, (Datum) 0,
+				errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+				errmsg("value out of range: underflow"));
 
 	PG_RETURN_FLOAT4(result);
 }
@@ -1241,7 +1246,7 @@ dtoi4(PG_FUNCTION_ARGS)
 
 	/* Range check */
 	if (unlikely(isnan(num) || !FLOAT8_FITS_IN_INT32(num)))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("integer out of range")));
 
@@ -1266,7 +1271,7 @@ dtoi2(PG_FUNCTION_ARGS)
 
 	/* Range check */
 	if (unlikely(isnan(num) || !FLOAT8_FITS_IN_INT16(num)))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("smallint out of range")));
 
