@@ -1325,7 +1325,8 @@ interval_scale(PG_FUNCTION_ARGS)
 	result = palloc_object(Interval);
 	*result = *interval;
 
-	AdjustIntervalForTypmod(result, typmod, NULL);
+	if (!AdjustIntervalForTypmod(result, typmod, fcinfo->context))
+		PG_RETURN_NULL();
 
 	PG_RETURN_INTERVAL_P(result);
 }
