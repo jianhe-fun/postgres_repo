@@ -1342,7 +1342,7 @@ ftoi8(PG_FUNCTION_ARGS)
 
 	/* Range check */
 	if (unlikely(isnan(num) || !FLOAT4_FITS_IN_INT64(num)))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("bigint out of range")));
 
