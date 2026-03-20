@@ -101,7 +101,7 @@ float4_dist(PG_FUNCTION_ARGS)
 
 	r = a - b;
 	if (unlikely(isinf(r)) && !isinf(a) && !isinf(b))
-		float_overflow_error();
+		float_overflow_error(NULL);
 
 	PG_RETURN_FLOAT4(fabsf(r));
 }
