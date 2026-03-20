@@ -840,10 +840,26 @@ select '{}'::text[]::hstore;
 
 select ARRAY['a','g','b','h','asd']::hstore;
 ERROR:  array must have even number of elements
+select CAST(ARRAY['a','g','b','h','asd'] AS hstore
+       DEFAULT NULL ON CONVERSION ERROR);
+ array 
+-------
+ 
+(1 row)
+
 select ARRAY['a','g','b','h','asd','i']::hstore;
              array              
 --------------------------------
  "a"=>"g", "b"=>"h", "asd"=>"i"
+(1 row)
+
+select ARRAY['a','g','b','h',null,'i']::hstore;
+ERROR:  null value not allowed for hstore key
+select CAST(ARRAY['a','g','b','h',null,'i'] AS hstore
+       DEFAULT NULL ON CONVERSION ERROR);
+ array 
+-------
+ 
 (1 row)
 
 select ARRAY[['a','g'],['b','h'],['asd','i']]::hstore;
@@ -854,6 +870,13 @@ select ARRAY[['a','g'],['b','h'],['asd','i']]::hstore;
 
 select ARRAY[['a','g','b'],['h','asd','i']]::hstore;
 ERROR:  array must have two columns
+select CAST(ARRAY[['a','g','b'],['h','asd','i']] AS hstore
+       DEFAULT NULL ON CONVERSION ERROR);
+ array 
+-------
+ 
+(1 row)
+
 select ARRAY[[['a','g'],['b','h'],['asd','i']]]::hstore;
 ERROR:  wrong number of array subscripts
 select hstore('{}'::text[]);
@@ -1552,6 +1575,13 @@ select cast( hstore  '"a key" =>1, b => t, c => null, d=> 12345, e => 012345, f=
  {"b": "t", "c": null, "d": "12345", "e": "012345", "f": "1.234", "g": "2.345e+4", "a key": "1"}
 (1 row)
 
+select cast( hstore  '"a key" =>1, b => t, c => null, d=> 12345, e => 012345, f=> 1.234, g=> 2.345e+4' as json
+            default null on conversion error);
+                                              json                                               
+-------------------------------------------------------------------------------------------------
+ {"b": "t", "c": null, "d": "12345", "e": "012345", "f": "1.234", "g": "2.345e+4", "a key": "1"}
+(1 row)
+
 select hstore_to_json_loose('"a key" =>1, b => t, c => null, d=> 12345, e => 012345, f=> 1.234, g=> 2.345e+4, h=> "2016-01-01"');
                                             hstore_to_json_loose                                             
 -------------------------------------------------------------------------------------------------------------
@@ -1565,6 +1595,13 @@ select hstore_to_jsonb('"a key" =>1, b => t, c => null, d=> 12345, e => 012345, 
 (1 row)
 
 select cast( hstore  '"a key" =>1, b => t, c => null, d=> 12345, e => 012345, f=> 1.234, g=> 2.345e+4' as jsonb);
+                                              jsonb                                              
+-------------------------------------------------------------------------------------------------
+ {"b": "t", "c": null, "d": "12345", "e": "012345", "f": "1.234", "g": "2.345e+4", "a key": "1"}
+(1 row)
+
+select cast( hstore  '"a key" =>1, b => t, c => null, d=> 12345, e => 012345, f=> 1.234, g=> 2.345e+4' as jsonb
+            default null on conversion error);
                                               jsonb                                              
 -------------------------------------------------------------------------------------------------
  {"b": "t", "c": null, "d": "12345", "e": "012345", "f": "1.234", "g": "2.345e+4", "a key": "1"}

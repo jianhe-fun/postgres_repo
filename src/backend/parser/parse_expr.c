@@ -84,8 +84,7 @@ static Node *transformTypeCast(ParseState *pstate, TypeCast *tc);
 static void CoercionErrorSafeCheck(ParseState *pstate, Node *castexpr,
 								   Node *source, Oid inputType, Oid targetType);
 static void CoercionErrorSafe_Internal(Oid inputType, Oid targetType,
-									   bool *errorsafe_coercion,
-									   bool *userdefined);
+									   bool *errorsafe_coercion);
 static Node *transformCollateClause(ParseState *pstate, CollateClause *c);
 static Node *transformJsonObjectConstructor(ParseState *pstate,
 											JsonObjectConstructor *ctor);
@@ -2999,7 +2998,6 @@ CoercionErrorSafeCheck(ParseState *pstate, Node *castexpr, Node *source,
 					   Oid inputType, Oid targetType)
 {
 	bool		errorsafe_coercion = true;
-	bool		userdefined = false;
 
 	/*
 	 * Binary coercion cast is error-safe, CoerceViaIO can also be evaluated
@@ -3011,8 +3009,7 @@ CoercionErrorSafeCheck(ParseState *pstate, Node *castexpr, Node *source,
 		return;
 
 	CoercionErrorSafe_Internal(inputType, targetType,
-							   &errorsafe_coercion,
-							   &userdefined);
+							   &errorsafe_coercion);
 
 	if (!errorsafe_coercion)
 		ereport(ERROR,
@@ -3022,15 +3019,13 @@ CoercionErrorSafeCheck(ParseState *pstate, Node *castexpr, Node *source,
 					   format_type_be(targetType),
 					   "DEFAULT",
 					   "CAST ... ON CONVERSION ERROR"),
-				userdefined
-				? errhint("Safe type cast for user-defined types are not yet supported.")
-				: errhint("Explicit cast is defined but definition is not error safe."),
+				errhint("Explicit cast is defined but definition is not error safe."),
 				parser_errposition(pstate, exprLocation(source)));
 }
 
 static void
 CoercionErrorSafe_Internal(Oid inputType, Oid targetType,
-						   bool *errorsafe_coercion, bool *userdefined)
+						   bool *errorsafe_coercion)
 {
 	HeapTuple	tuple;
 
@@ -3041,7 +3036,6 @@ CoercionErrorSafe_Internal(Oid inputType, Oid targetType,
 	check_stack_depth();
 
 	Assert(errorsafe_coercion != NULL);
-	Assert(userdefined != NULL);
 
 	if (!(*errorsafe_coercion))
 		return;
@@ -3051,24 +3045,21 @@ CoercionErrorSafe_Internal(Oid inputType, Oid targetType,
 	{
 		CoercionErrorSafe_Internal(getBaseType(inputType),
 								   getBaseType(targetType),
-								   errorsafe_coercion,
-								   userdefined);
+								   errorsafe_coercion);
 		return;
 	}
 	else if (input_typtype == TYPTYPE_DOMAIN)
 	{
 		CoercionErrorSafe_Internal(getBaseType(inputType),
 								   targetType,
-								   errorsafe_coercion,
-								   userdefined);
+								   errorsafe_coercion);
 		return;
 	}
 	else if (target_typtype == TYPTYPE_DOMAIN)
 	{
 		CoercionErrorSafe_Internal(inputType,
 								   getBaseType(targetType),
-								   errorsafe_coercion,
-								   userdefined);
+								   errorsafe_coercion);
 		return;
 	}
 	else if ((input_typtype != TYPTYPE_BASE && input_typtype != TYPTYPE_PSEUDO && inputType > FirstUnpinnedObjectId)
@@ -3102,8 +3093,7 @@ CoercionErrorSafe_Internal(Oid inputType, Oid targetType,
 			/* recurse into array element type */
 			CoercionErrorSafe_Internal(input_typelem,
 									   target_typelem,
-									   errorsafe_coercion,
-									   userdefined);
+									   errorsafe_coercion);
 			return;
 		}
 	}
@@ -3135,15 +3125,13 @@ CoercionErrorSafe_Internal(Oid inputType, Oid targetType,
 		{
 			Form_pg_cast castForm = (Form_pg_cast) GETSTRUCT(tuple);
 
-			if (castForm->castfunc > FirstUnpinnedObjectId)
+			if (castForm->castmethod != COERCION_METHOD_BINARY &&
+				!castForm->casterrorsafe)
 			{
 				*errorsafe_coercion = false;
-				*userdefined = true;
 			}
 			ReleaseSysCache(tuple);
 		}
-		else if (inputType > FirstUnpinnedObjectId && targetType > FirstUnpinnedObjectId)
-			*errorsafe_coercion = false;
 	}
 }
 

@@ -1668,6 +1668,20 @@ CreateCast(CreateCastStmt *stmt)
 					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 					 errmsg("cast function must not return a set")));
 
+		if (stmt->safe)
+		{
+			if (procstruct->prolang != INTERNALlanguageId &&
+				procstruct->prolang != ClanguageId)
+				ereport(ERROR,
+						errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("safe type cast functions are only supported for C and internal languages"));
+
+			if (sourcetyptype != TYPTYPE_BASE || targettyptype != TYPTYPE_BASE)
+				ereport(ERROR,
+						errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("safe type cast is allowed for base type only are only"));
+		}
+
 		ReleaseSysCache(tuple);
 	}
 	else
@@ -1796,7 +1810,7 @@ CreateCast(CreateCastStmt *stmt)
 	}
 
 	myself = CastCreate(sourcetypeid, targettypeid, funcid, incastid, outcastid,
-						castcontext, castmethod, DEPENDENCY_NORMAL);
+						castcontext, castmethod, stmt->safe, DEPENDENCY_NORMAL);
 	return myself;
 }
 

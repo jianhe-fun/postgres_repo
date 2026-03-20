@@ -4242,6 +4242,7 @@ typedef struct CreateCastStmt
 	ObjectWithArgs *func;
 	CoercionContext context;
 	bool		inout;
+	bool		safe;
 } CreateCastStmt;
 
 /* ----------------------

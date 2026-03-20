@@ -190,9 +190,16 @@ select pg_column_size(slice(hstore 'aa=>1, b=>2, c=>3', ARRAY['c','b','aa']))
 -- array input
 select '{}'::text[]::hstore;
 select ARRAY['a','g','b','h','asd']::hstore;
+select CAST(ARRAY['a','g','b','h','asd'] AS hstore
+       DEFAULT NULL ON CONVERSION ERROR);
 select ARRAY['a','g','b','h','asd','i']::hstore;
+select ARRAY['a','g','b','h',null,'i']::hstore;
+select CAST(ARRAY['a','g','b','h',null,'i'] AS hstore
+       DEFAULT NULL ON CONVERSION ERROR);
 select ARRAY[['a','g'],['b','h'],['asd','i']]::hstore;
 select ARRAY[['a','g','b'],['h','asd','i']]::hstore;
+select CAST(ARRAY[['a','g','b'],['h','asd','i']] AS hstore
+       DEFAULT NULL ON CONVERSION ERROR);
 select ARRAY[[['a','g'],['b','h'],['asd','i']]]::hstore;
 select hstore('{}'::text[]);
 select hstore(ARRAY['a','g','b','h','asd']);
@@ -361,10 +368,14 @@ select count(*) from testhstore where h = 'pos=>98, line=>371, node=>CBA, indexe
 -- json and jsonb
 select hstore_to_json('"a key" =>1, b => t, c => null, d=> 12345, e => 012345, f=> 1.234, g=> 2.345e+4');
 select cast( hstore  '"a key" =>1, b => t, c => null, d=> 12345, e => 012345, f=> 1.234, g=> 2.345e+4' as json);
+select cast( hstore  '"a key" =>1, b => t, c => null, d=> 12345, e => 012345, f=> 1.234, g=> 2.345e+4' as json
+            default null on conversion error);
 select hstore_to_json_loose('"a key" =>1, b => t, c => null, d=> 12345, e => 012345, f=> 1.234, g=> 2.345e+4, h=> "2016-01-01"');
 
 select hstore_to_jsonb('"a key" =>1, b => t, c => null, d=> 12345, e => 012345, f=> 1.234, g=> 2.345e+4');
 select cast( hstore  '"a key" =>1, b => t, c => null, d=> 12345, e => 012345, f=> 1.234, g=> 2.345e+4' as jsonb);
+select cast( hstore  '"a key" =>1, b => t, c => null, d=> 12345, e => 012345, f=> 1.234, g=> 2.345e+4' as jsonb
+            default null on conversion error);
 select hstore_to_jsonb_loose('"a key" =>1, b => t, c => null, d=> 12345, e => 012345, f=> 1.234, g=> 2.345e+4, h=> "2016-01-01"');
 
 create table test_json_agg (f1 text, f2 hstore);

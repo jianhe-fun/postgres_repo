@@ -9,7 +9,7 @@ SELECT amname, opcname
 FROM pg_opclass opc LEFT JOIN pg_am am ON am.oid = opcmethod
 WHERE opc.oid >= 16384 AND NOT amvalidate(opc.oid);
 
-SELECT CAST('abc'::bpchar AS citext DEFAULT NULL ON CONVERSION ERROR); -- error
+SELECT CAST('abc'::bpchar AS citext DEFAULT NULL ON CONVERSION ERROR);
 
 -- Test the operators and indexing functions
 
@@ -165,6 +165,7 @@ SELECT name FROM srt WHERE name SIMILAR TO '%A.*';
 
 -- Explicit casts.
 SELECT true::citext = 'true' AS t;
+SELECT CAST(true AS citext DEFAULT NULL ON CONVERSION ERROR);
 SELECT 'true'::citext::boolean = true AS t;
 
 SELECT 4::citext = '4' AS t;
@@ -224,6 +225,8 @@ SELECT '192.168.100.128/25'::citext::cidr = '192.168.100.128/25'::cidr AS t;
 
 SELECT '192.168.100.128'::inet::citext = '192.168.100.128/32' AS t;
 SELECT '192.168.100.128'::citext::inet = '192.168.100.128'::inet AS t;
+SELECT CAST(inet '192.168.100.128' AS citext
+           DEFAULT NULL ON CONVERSION ERROR) = '192.168.100.128/32' AS t;
 
 SELECT '08:00:2b:01:02:03'::macaddr::citext = '08:00:2b:01:02:03' AS t;
 SELECT '08:00:2b:01:02:03'::citext::macaddr = '08:00:2b:01:02:03'::macaddr AS t;

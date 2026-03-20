@@ -85,9 +85,9 @@ CREATE CAST (citext AS varchar) WITHOUT FUNCTION AS IMPLICIT;
 CREATE CAST (citext AS bpchar)  WITHOUT FUNCTION AS ASSIGNMENT;
 CREATE CAST (text AS citext)    WITHOUT FUNCTION AS ASSIGNMENT;
 CREATE CAST (varchar AS citext) WITHOUT FUNCTION AS ASSIGNMENT;
-CREATE CAST (bpchar AS citext)  WITH FUNCTION citext(bpchar)  AS ASSIGNMENT;
-CREATE CAST (boolean AS citext) WITH FUNCTION citext(boolean) AS ASSIGNMENT;
-CREATE CAST (inet AS citext)    WITH FUNCTION citext(inet)    AS ASSIGNMENT;
+CREATE CAST (bpchar AS citext)  WITH SAFE FUNCTION citext(bpchar)  AS ASSIGNMENT;
+CREATE CAST (boolean AS citext) WITH SAFE FUNCTION citext(boolean) AS ASSIGNMENT;
+CREATE CAST (inet AS citext)    WITH SAFE FUNCTION citext(inet)    AS ASSIGNMENT;
 
 --
 -- Operator Functions.
