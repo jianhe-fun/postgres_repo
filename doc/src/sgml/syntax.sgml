@@ -2142,9 +2142,8 @@ CAST ( <replaceable>expression</replaceable> AS <replaceable>type</replaceable> 
     If the type cast fails, an error is not raised.  Instead, evaluation falls
     back to the default <replaceable>expression</replaceable> specified in the
     <literal>ON CONVERSION ERROR</literal> clause.
-    At present, this only support built-in type casts, see <xref linkend="catalog-pg-cast"/>.
     User-defined type casts created with <link linkend="sql-createcast">CREATE CAST</link>
-    are not supported.
+    are supported too.
   </para>
 
     <para>

@@ -60,6 +60,11 @@ DROP FUNCTION int4_casttesttype(int4) CASCADE;
 CREATE FUNCTION bar_int4_text(int4) RETURNS text LANGUAGE SQL AS
 $$ SELECT ('bar'::text || $1::text); $$;
 
+CREATE FUNCTION bar_int4_text_plpg(int4) RETURNS text LANGUAGE plpgsql AS
+$$ BEGIN RETURN ('bar'::text || $1::text); END $$;
+
+CREATE CAST (int4 AS casttesttype) WITH SAFE FUNCTION bar_int4_text(int4) AS IMPLICIT; -- error
+CREATE CAST (int4 AS casttesttype) WITH SAFE FUNCTION bar_int4_text_plpg(int4) AS IMPLICIT; -- error
 CREATE CAST (int4 AS casttesttype) WITH FUNCTION bar_int4_text(int4) AS IMPLICIT;
 SELECT 1234::int4::casttesttype; -- Should work now
 SELECT CAST(1234::int4 AS casttesttype DEFAULT NULL ON CONVERSION ERROR); -- error

@@ -49,6 +49,10 @@ CATALOG(pg_cast,2605,CastRelationId)
 
 	/* cast method */
 	char		castmethod;
+
+	/* cast function error safe */
+	bool		casterrorsafe BKI_DEFAULT(f);
+
 } FormData_pg_cast;
 
 END_CATALOG_STRUCT
@@ -105,6 +109,7 @@ extern ObjectAddress CastCreate(Oid sourcetypeid,
 								Oid outcastid,
 								char castcontext,
 								char castmethod,
+								bool casterrorsafe,
 								DependencyType behavior);
 
 #endif							/* PG_CAST_H */

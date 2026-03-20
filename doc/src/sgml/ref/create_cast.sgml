@@ -22,7 +22,7 @@ PostgreSQL documentation
  <refsynopsisdiv>
 <synopsis>
 CREATE CAST (<replaceable>source_type</replaceable> AS <replaceable>target_type</replaceable>)
-    WITH FUNCTION <replaceable>function_name</replaceable> [ (<replaceable>argument_type</replaceable> [, ...]) ]
+    WITH [SAFE] FUNCTION <replaceable>function_name</replaceable> [ (<replaceable>argument_type</replaceable> [, ...]) ]
     [ AS ASSIGNMENT | AS IMPLICIT ]
 
 CREATE CAST (<replaceable>source_type</replaceable> AS <replaceable>target_type</replaceable>)
@@ -190,6 +190,18 @@ SELECT CAST ( 2 AS numeric ) + 4.0;
      <listitem>
       <para>
        The name of the target data type of the cast.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>SAFE</literal></term>
+     <listitem>
+      <para>
+       The function used to perform the cast support soft-error evaluation,
+       Currently, only functions written in C or the internal language are supported.
+       An alternate expression can be specified to be evaluated if the cast
+       error occurs.  See <link linkend="sql-syntax-type-casts-safe">safe type cast</link>.
       </para>
      </listitem>
     </varlistentry>
