@@ -82,7 +82,7 @@ static inline void point_sub_point(Point *result, Point *pt1, Point *pt2);
 static inline void point_mul_point(Point *result, Point *pt1, Point *pt2);
 static inline void point_div_point(Point *result, Point *pt1, Point *pt2);
 static inline bool point_eq_point(Point *pt1, Point *pt2);
-static inline float8 point_dt(Point *pt1, Point *pt2);
+static inline float8 point_dt(Point *pt1, Point *pt2, Node *escontext);
 static inline float8 point_sl(Point *pt1, Point *pt2);
 static int	point_inside(Point *p, int npts, Point *plist);
 
@@ -839,7 +839,7 @@ box_distance(PG_FUNCTION_ARGS)
 	box_cn(&a, box1);
 	box_cn(&b, box2);
 
-	PG_RETURN_FLOAT8(point_dt(&a, &b));
+	PG_RETURN_FLOAT8(point_dt(&a, &b, NULL));
 }
 
 
@@ -1808,7 +1808,8 @@ path_length(PG_FUNCTION_ARGS)
 			iprev = path->npts - 1; /* include the closure segment */
 		}
 
-		result = float8_pl(result, point_dt(&path->p[iprev], &path->p[i]));
+		result = float8_pl(result,
+						   point_dt(&path->p[iprev], &path->p[i], NULL));
 	}
 
 	PG_RETURN_FLOAT8(result);
@@ -1995,13 +1996,24 @@ point_distance(PG_FUNCTION_ARGS)
 	Point	   *pt1 = PG_GETARG_POINT_P(0);
 	Point	   *pt2 = PG_GETARG_POINT_P(1);
 
-	PG_RETURN_FLOAT8(point_dt(pt1, pt2));
+	PG_RETURN_FLOAT8(point_dt(pt1, pt2, NULL));
 }
 
 static inline float8
-point_dt(Point *pt1, Point *pt2)
+point_dt(Point *pt1, Point *pt2, Node *escontext)
 {
-	return hypot(float8_mi(pt1->x, pt2->x), float8_mi(pt1->y, pt2->y));
+	float8		x;
+	float8		y;
+
+	x = float8_mi_safe(pt1->x, pt2->x, escontext);
+	if (unlikely(SOFT_ERROR_OCCURRED(escontext)))
+		return 0.0;
+
+	y = float8_mi_safe(pt1->y, pt2->y, escontext);
+	if (unlikely(SOFT_ERROR_OCCURRED(escontext)))
+		return 0.0;
+
+	return hypot(x, y);
 }
 
 Datum
@@ -2173,7 +2185,7 @@ lseg_length(PG_FUNCTION_ARGS)
 {
 	LSEG	   *lseg = PG_GETARG_LSEG_P(0);
 
-	PG_RETURN_FLOAT8(point_dt(&lseg->p[0], &lseg->p[1]));
+	PG_RETURN_FLOAT8(point_dt(&lseg->p[0], &lseg->p[1], NULL));
 }
 
 /*----------------------------------------------------------
@@ -2258,8 +2270,8 @@ lseg_lt(PG_FUNCTION_ARGS)
 	LSEG	   *l1 = PG_GETARG_LSEG_P(0);
 	LSEG	   *l2 = PG_GETARG_LSEG_P(1);
 
-	PG_RETURN_BOOL(FPlt(point_dt(&l1->p[0], &l1->p[1]),
-						point_dt(&l2->p[0], &l2->p[1])));
+	PG_RETURN_BOOL(FPlt(point_dt(&l1->p[0], &l1->p[1], NULL),
+						point_dt(&l2->p[0], &l2->p[1], NULL)));
 }
 
 Datum
@@ -2268,8 +2280,8 @@ lseg_le(PG_FUNCTION_ARGS)
 	LSEG	   *l1 = PG_GETARG_LSEG_P(0);
 	LSEG	   *l2 = PG_GETARG_LSEG_P(1);
 
-	PG_RETURN_BOOL(FPle(point_dt(&l1->p[0], &l1->p[1]),
-						point_dt(&l2->p[0], &l2->p[1])));
+	PG_RETURN_BOOL(FPle(point_dt(&l1->p[0], &l1->p[1], NULL),
+						point_dt(&l2->p[0], &l2->p[1], NULL)));
 }
 
 Datum
@@ -2278,8 +2290,8 @@ lseg_gt(PG_FUNCTION_ARGS)
 	LSEG	   *l1 = PG_GETARG_LSEG_P(0);
 	LSEG	   *l2 = PG_GETARG_LSEG_P(1);
 
-	PG_RETURN_BOOL(FPgt(point_dt(&l1->p[0], &l1->p[1]),
-						point_dt(&l2->p[0], &l2->p[1])));
+	PG_RETURN_BOOL(FPgt(point_dt(&l1->p[0], &l1->p[1], NULL),
+						point_dt(&l2->p[0], &l2->p[1], NULL)));
 }
 
 Datum
@@ -2288,8 +2300,8 @@ lseg_ge(PG_FUNCTION_ARGS)
 	LSEG	   *l1 = PG_GETARG_LSEG_P(0);
 	LSEG	   *l2 = PG_GETARG_LSEG_P(1);
 
-	PG_RETURN_BOOL(FPge(point_dt(&l1->p[0], &l1->p[1]),
-						point_dt(&l2->p[0], &l2->p[1])));
+	PG_RETURN_BOOL(FPge(point_dt(&l1->p[0], &l1->p[1], NULL),
+						point_dt(&l2->p[0], &l2->p[1], NULL)));
 }
 
 
@@ -2743,7 +2755,7 @@ line_closept_point(Point *result, LINE *line, Point *point)
 	if (result != NULL)
 		*result = closept;
 
-	return point_dt(&closept, point);
+	return point_dt(&closept, point, NULL);
 }
 
 Datum
@@ -2784,7 +2796,7 @@ lseg_closept_point(Point *result, LSEG *lseg, Point *pt)
 	if (result != NULL)
 		*result = closept;
 
-	return point_dt(&closept, pt);
+	return point_dt(&closept, pt, NULL);
 }
 
 Datum
@@ -3108,9 +3120,9 @@ on_pl(PG_FUNCTION_ARGS)
 static bool
 lseg_contain_point(LSEG *lseg, Point *pt)
 {
-	return FPeq(point_dt(pt, &lseg->p[0]) +
-				point_dt(pt, &lseg->p[1]),
-				point_dt(&lseg->p[0], &lseg->p[1]));
+	return FPeq(point_dt(pt, &lseg->p[0], NULL) +
+				point_dt(pt, &lseg->p[1], NULL),
+				point_dt(&lseg->p[0], &lseg->p[1], NULL));
 }
 
 Datum
@@ -3176,11 +3188,12 @@ on_ppath(PG_FUNCTION_ARGS)
 	if (!path->closed)
 	{
 		n = path->npts - 1;
-		a = point_dt(pt, &path->p[0]);
+		a = point_dt(pt, &path->p[0], NULL);
 		for (i = 0; i < n; i++)
 		{
-			b = point_dt(pt, &path->p[i + 1]);
-			if (FPeq(float8_pl(a, b), point_dt(&path->p[i], &path->p[i + 1])))
+			b = point_dt(pt, &path->p[i + 1], NULL);
+			if (FPeq(float8_pl(a, b),
+					 point_dt(&path->p[i], &path->p[i + 1], NULL)))
 				PG_RETURN_BOOL(true);
 			a = b;
 		}
@@ -4766,7 +4779,7 @@ circle_overlap(PG_FUNCTION_ARGS)
 	CIRCLE	   *circle1 = PG_GETARG_CIRCLE_P(0);
 	CIRCLE	   *circle2 = PG_GETARG_CIRCLE_P(1);
 
-	PG_RETURN_BOOL(FPle(point_dt(&circle1->center, &circle2->center),
+	PG_RETURN_BOOL(FPle(point_dt(&circle1->center, &circle2->center, NULL),
 						float8_pl(circle1->radius, circle2->radius)));
 }
 
@@ -4828,7 +4841,7 @@ circle_contained(PG_FUNCTION_ARGS)
 	CIRCLE	   *circle1 = PG_GETARG_CIRCLE_P(0);
 	CIRCLE	   *circle2 = PG_GETARG_CIRCLE_P(1);
 
-	PG_RETURN_BOOL(FPle(point_dt(&circle1->center, &circle2->center),
+	PG_RETURN_BOOL(FPle(point_dt(&circle1->center, &circle2->center, NULL),
 						float8_mi(circle2->radius, circle1->radius)));
 }
 
@@ -4840,7 +4853,7 @@ circle_contain(PG_FUNCTION_ARGS)
 	CIRCLE	   *circle1 = PG_GETARG_CIRCLE_P(0);
 	CIRCLE	   *circle2 = PG_GETARG_CIRCLE_P(1);
 
-	PG_RETURN_BOOL(FPle(point_dt(&circle1->center, &circle2->center),
+	PG_RETURN_BOOL(FPle(point_dt(&circle1->center, &circle2->center, NULL),
 						float8_mi(circle1->radius, circle2->radius)));
 }
 
@@ -5069,7 +5082,7 @@ circle_distance(PG_FUNCTION_ARGS)
 	CIRCLE	   *circle2 = PG_GETARG_CIRCLE_P(1);
 	float8		result;
 
-	result = float8_mi(point_dt(&circle1->center, &circle2->center),
+	result = float8_mi(point_dt(&circle1->center, &circle2->center, NULL),
 					   float8_pl(circle1->radius, circle2->radius));
 	if (result < 0.0)
 		result = 0.0;
@@ -5085,7 +5098,7 @@ circle_contain_pt(PG_FUNCTION_ARGS)
 	Point	   *point = PG_GETARG_POINT_P(1);
 	float8		d;
 
-	d = point_dt(&circle->center, point);
+	d = point_dt(&circle->center, point, NULL);
 	PG_RETURN_BOOL(d <= circle->radius);
 }
 
@@ -5097,7 +5110,7 @@ pt_contained_circle(PG_FUNCTION_ARGS)
 	CIRCLE	   *circle = PG_GETARG_CIRCLE_P(1);
 	float8		d;
 
-	d = point_dt(&circle->center, point);
+	d = point_dt(&circle->center, point, NULL);
 	PG_RETURN_BOOL(d <= circle->radius);
 }
 
@@ -5112,7 +5125,7 @@ dist_pc(PG_FUNCTION_ARGS)
 	CIRCLE	   *circle = PG_GETARG_CIRCLE_P(1);
 	float8		result;
 
-	result = float8_mi(point_dt(point, &circle->center),
+	result = float8_mi(point_dt(point, &circle->center, NULL),
 					   circle->radius);
 	if (result < 0.0)
 		result = 0.0;
@@ -5130,7 +5143,7 @@ dist_cpoint(PG_FUNCTION_ARGS)
 	Point	   *point = PG_GETARG_POINT_P(1);
 	float8		result;
 
-	result = float8_mi(point_dt(point, &circle->center), circle->radius);
+	result = float8_mi(point_dt(point, &circle->center, NULL), circle->radius);
 	if (result < 0.0)
 		result = 0.0;
 
@@ -5215,7 +5228,7 @@ box_circle(PG_FUNCTION_ARGS)
 	circle->center.x = float8_div(float8_pl(box->high.x, box->low.x), 2.0);
 	circle->center.y = float8_div(float8_pl(box->high.y, box->low.y), 2.0);
 
-	circle->radius = point_dt(&circle->center, &box->high);
+	circle->radius = point_dt(&circle->center, &box->high, NULL);
 
 	PG_RETURN_CIRCLE_P(circle);
 }
@@ -5299,7 +5312,7 @@ poly_to_circle(CIRCLE *result, POLYGON *poly)
 
 	for (i = 0; i < poly->npts; i++)
 		result->radius = float8_pl(result->radius,
-								   point_dt(&poly->p[i], &result->center));
+								   point_dt(&poly->p[i], &result->center, NULL));
 	result->radius = float8_div(result->radius, poly->npts);
 }
 
