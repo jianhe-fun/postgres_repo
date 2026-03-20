@@ -1786,7 +1786,7 @@ JsonbExtractScalar(JsonbContainer *jbc, JsonbValue *res)
  * Emit correct, translatable cast error message
  */
 static void
-cannotCastJsonbValue(enum jbvType type, const char *sqltype)
+cannotCastJsonbValue(enum jbvType type, const char *sqltype, Node *escontext)
 {
 	static const struct
 	{
@@ -1807,7 +1807,7 @@ cannotCastJsonbValue(enum jbvType type, const char *sqltype)
 
 	for (i = 0; i < lengthof(messages); i++)
 		if (messages[i].type == type)
-			ereport(ERROR,
+			ereturn(escontext,,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg(messages[i].msg, sqltype)));
 
@@ -1822,7 +1822,10 @@ jsonb_bool(PG_FUNCTION_ARGS)
 	JsonbValue	v;
 
 	if (!JsonbExtractScalar(&in->root, &v))
-		cannotCastJsonbValue(v.type, "boolean");
+	{
+		cannotCastJsonbValue(v.type, "boolean", fcinfo->context);
+		PG_RETURN_NULL();
+	}
 
 	if (v.type == jbvNull)
 	{
@@ -1831,7 +1834,10 @@ jsonb_bool(PG_FUNCTION_ARGS)
 	}
 
 	if (v.type != jbvBool)
-		cannotCastJsonbValue(v.type, "boolean");
+	{
+		cannotCastJsonbValue(v.type, "boolean", fcinfo->context);
+		PG_RETURN_NULL();
+	}
 
 	PG_FREE_IF_COPY(in, 0);
 
@@ -1846,7 +1852,10 @@ jsonb_numeric(PG_FUNCTION_ARGS)
 	Numeric		retValue;
 
 	if (!JsonbExtractScalar(&in->root, &v))
-		cannotCastJsonbValue(v.type, "numeric");
+	{
+		cannotCastJsonbValue(v.type, "numeric", fcinfo->context);
+		PG_RETURN_NULL();
+	}
 
 	if (v.type == jbvNull)
 	{
@@ -1855,7 +1864,10 @@ jsonb_numeric(PG_FUNCTION_ARGS)
 	}
 
 	if (v.type != jbvNumeric)
-		cannotCastJsonbValue(v.type, "numeric");
+	{
+		cannotCastJsonbValue(v.type, "numeric", fcinfo->context);
+		PG_RETURN_NULL();
+	}
 
 	/*
 	 * v.val.numeric points into jsonb body, so we need to make a copy to
@@ -1876,7 +1888,10 @@ jsonb_int2(PG_FUNCTION_ARGS)
 	Datum		retValue;
 
 	if (!JsonbExtractScalar(&in->root, &v))
-		cannotCastJsonbValue(v.type, "smallint");
+	{
+		cannotCastJsonbValue(v.type, "smallint", fcinfo->context);
+		PG_RETURN_NULL();
+	}
 
 	if (v.type == jbvNull)
 	{
@@ -1885,7 +1900,10 @@ jsonb_int2(PG_FUNCTION_ARGS)
 	}
 
 	if (v.type != jbvNumeric)
-		cannotCastJsonbValue(v.type, "smallint");
+	{
+		cannotCastJsonbValue(v.type, "smallint", fcinfo->context);
+		PG_RETURN_NULL();
+	}
 
 	retValue = DirectFunctionCall1(numeric_int2,
 								   NumericGetDatum(v.val.numeric));
@@ -1903,7 +1921,10 @@ jsonb_int4(PG_FUNCTION_ARGS)
 	Datum		retValue;
 
 	if (!JsonbExtractScalar(&in->root, &v))
-		cannotCastJsonbValue(v.type, "integer");
+	{
+		cannotCastJsonbValue(v.type, "integer", fcinfo->context);
+		PG_RETURN_NULL();
+	}
 
 	if (v.type == jbvNull)
 	{
@@ -1912,7 +1933,10 @@ jsonb_int4(PG_FUNCTION_ARGS)
 	}
 
 	if (v.type != jbvNumeric)
-		cannotCastJsonbValue(v.type, "integer");
+	{
+		cannotCastJsonbValue(v.type, "integer", fcinfo->context);
+		PG_RETURN_NULL();
+	}
 
 	retValue = DirectFunctionCall1(numeric_int4,
 								   NumericGetDatum(v.val.numeric));
@@ -1930,7 +1954,10 @@ jsonb_int8(PG_FUNCTION_ARGS)
 	Datum		retValue;
 
 	if (!JsonbExtractScalar(&in->root, &v))
-		cannotCastJsonbValue(v.type, "bigint");
+	{
+		cannotCastJsonbValue(v.type, "bigint", fcinfo->context);
+		PG_RETURN_NULL();
+	}
 
 	if (v.type == jbvNull)
 	{
@@ -1939,7 +1966,10 @@ jsonb_int8(PG_FUNCTION_ARGS)
 	}
 
 	if (v.type != jbvNumeric)
-		cannotCastJsonbValue(v.type, "bigint");
+	{
+		cannotCastJsonbValue(v.type, "bigint", fcinfo->context);
+		PG_RETURN_NULL();
+	}
 
 	retValue = DirectFunctionCall1(numeric_int8,
 								   NumericGetDatum(v.val.numeric));
@@ -1957,7 +1987,10 @@ jsonb_float4(PG_FUNCTION_ARGS)
 	Datum		retValue;
 
 	if (!JsonbExtractScalar(&in->root, &v))
-		cannotCastJsonbValue(v.type, "real");
+	{
+		cannotCastJsonbValue(v.type, "real", fcinfo->context);
+		PG_RETURN_NULL();
+	}
 
 	if (v.type == jbvNull)
 	{
@@ -1966,7 +1999,10 @@ jsonb_float4(PG_FUNCTION_ARGS)
 	}
 
 	if (v.type != jbvNumeric)
-		cannotCastJsonbValue(v.type, "real");
+	{
+		cannotCastJsonbValue(v.type, "real", fcinfo->context);
+		PG_RETURN_NULL();
+	}
 
 	retValue = DirectFunctionCall1(numeric_float4,
 								   NumericGetDatum(v.val.numeric));
@@ -1984,7 +2020,10 @@ jsonb_float8(PG_FUNCTION_ARGS)
 	Datum		retValue;
 
 	if (!JsonbExtractScalar(&in->root, &v))
-		cannotCastJsonbValue(v.type, "double precision");
+	{
+		cannotCastJsonbValue(v.type, "double precision", fcinfo->context);
+		PG_RETURN_NULL();
+	}
 
 	if (v.type == jbvNull)
 	{
@@ -1993,7 +2032,10 @@ jsonb_float8(PG_FUNCTION_ARGS)
 	}
 
 	if (v.type != jbvNumeric)
-		cannotCastJsonbValue(v.type, "double precision");
+	{
+		cannotCastJsonbValue(v.type, "double precision", fcinfo->context);
+		PG_RETURN_NULL();
+	}
 
 	retValue = DirectFunctionCall1(numeric_float8,
 								   NumericGetDatum(v.val.numeric));
