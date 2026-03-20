@@ -768,6 +768,7 @@ ParseFuncOrColumn(ParseState *pstate, List *funcname, List *fargs,
 		funcexpr->funcformat = funcformat;
 		/* funccollid and inputcollid will be set by parse_collate.c */
 		funcexpr->args = fargs;
+		funcexpr->errorsafe = false;
 		funcexpr->location = location;
 
 		retval = (Node *) funcexpr;
@@ -2742,6 +2743,9 @@ check_srf_call_placement(ParseState *pstate, Node *last_srf, int location)
 		case EXPR_KIND_CHECK_CONSTRAINT:
 		case EXPR_KIND_DOMAIN_CHECK:
 			err = _("set-returning functions are not allowed in check constraints");
+			break;
+		case EXPR_KIND_CAST_DEFAULT:
+			err = _("set-returning functions are not allowed in CAST DEFAULT expressions");
 			break;
 		case EXPR_KIND_COLUMN_DEFAULT:
 		case EXPR_KIND_FUNCTION_DEFAULT:

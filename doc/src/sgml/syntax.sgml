@@ -2071,6 +2071,10 @@ CAST ( <replaceable>expression</replaceable> AS <replaceable>type</replaceable> 
     The <literal>CAST</literal> syntax conforms to SQL; the syntax with
     <literal>::</literal> is historical <productname>PostgreSQL</productname>
     usage.
+    The default behavior when no <literal>ON CONVERSION ERROR</literal> clause is specified is equivalent to:
+<synopsis>
+CAST ( <replaceable>expression</replaceable> AS <replaceable>type</replaceable> ERROR ON CONVERSION ERROR )
+</synopsis>
    </para>
 
    <para>
@@ -2125,6 +2129,34 @@ CAST ( <replaceable>expression</replaceable> AS <replaceable>type</replaceable> 
      <xref linkend="sql-createcast"/>.
     </para>
    </note>
+
+ <sect3 id="sql-syntax-type-casts-safe">
+  <title>Safe Type Cast</title>
+   <para>
+    A type cast may occasionally fail. To guard against such failures, you can
+    provide an <literal>ON CONVERSION ERROR</literal> clause to handle potential errors.
+    The syntax for safe type cast is:
+<synopsis>
+CAST ( <replaceable>expression</replaceable> AS <replaceable>type</replaceable> DEFAULT <replaceable>expression</replaceable> ON CONVERSION ERROR )
+</synopsis>
+    If the type cast fails, an error is not raised.  Instead, evaluation falls
+    back to the default <replaceable>expression</replaceable> specified in the
+    <literal>ON CONVERSION ERROR</literal> clause.
+    At present, this only support built-in type casts, see <xref linkend="catalog-pg-cast"/>.
+    User-defined type casts created with <link linkend="sql-createcast">CREATE CAST</link>
+    are not supported.
+  </para>
+
+    <para>
+    Some examples:
+<screen>
+SELECT CAST(TEXT 'error' AS integer DEFAULT 3 ON CONVERSION ERROR);
+<lineannotation>Result: </lineannotation><computeroutput>3</computeroutput>
+SELECT CAST(TEXT 'error' AS numeric DEFAULT 1.1 ON CONVERSION ERROR);
+<lineannotation>Result: </lineannotation><computeroutput>1.1</computeroutput>
+</screen>
+    </para>
+  </sect3>
   </sect2>
 
   <sect2 id="sql-syntax-collate-exprs">
