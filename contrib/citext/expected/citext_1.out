@@ -10,11 +10,12 @@ WHERE opc.oid >= 16384 AND NOT amvalidate(opc.oid);
 --------+---------
 (0 rows)
 
-SELECT CAST('abc'::bpchar AS citext DEFAULT NULL ON CONVERSION ERROR); -- error
-ERROR:  cannot cast type character to citext when DEFAULT expression is specified in CAST ... ON CONVERSION ERROR
-LINE 1: SELECT CAST('abc'::bpchar AS citext DEFAULT NULL ON CONVERSI...
-                    ^
-HINT:  Safe type cast for user-defined types are not yet supported.
+SELECT CAST('abc'::bpchar AS citext DEFAULT NULL ON CONVERSION ERROR);
+ citext 
+--------
+ abc
+(1 row)
+
 -- Test the operators and indexing functions
 -- Test = and <>.
 SELECT 'a'::citext = 'a'::citext AS t;
@@ -523,6 +524,12 @@ SELECT true::citext = 'true' AS t;
  t
 (1 row)
 
+SELECT CAST(true AS citext DEFAULT NULL ON CONVERSION ERROR);
+ citext 
+--------
+ true
+(1 row)
+
 SELECT 'true'::citext::boolean = true AS t;
  t 
 ---
@@ -782,6 +789,13 @@ SELECT '192.168.100.128'::inet::citext = '192.168.100.128/32' AS t;
 (1 row)
 
 SELECT '192.168.100.128'::citext::inet = '192.168.100.128'::inet AS t;
+ t 
+---
+ t
+(1 row)
+
+SELECT CAST(inet '192.168.100.128' AS citext
+           DEFAULT NULL ON CONVERSION ERROR) = '192.168.100.128/32' AS t;
  t 
 ---
  t
