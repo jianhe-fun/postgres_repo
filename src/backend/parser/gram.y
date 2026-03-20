@@ -358,7 +358,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <defelt>	drop_option
 %type <boolean>	opt_or_replace opt_no
 				opt_grant_grant_option
-				opt_nowait opt_if_exists opt_with_data
+				opt_nowait opt_safe opt_if_exists opt_with_data
 				opt_transaction_chain
 %type <list>	grant_role_opt_list
 %type <defelt>	grant_role_opt
@@ -813,7 +813,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	RESET RESPECT_P RESTART RESTRICT RETURN RETURNING RETURNS REVOKE RIGHT ROLE ROLLBACK ROLLUP
 	ROUTINE ROUTINES ROW ROWS RULE
 
-	SAVEPOINT SCALAR SCHEMA SCHEMAS SCROLL SEARCH SECOND_P SECURITY SELECT
+	SAFE SAVEPOINT SCALAR SCHEMA SCHEMAS SCROLL SEARCH SECOND_P SECURITY SELECT
 	SEQUENCE SEQUENCES
 	SERIALIZABLE SERVER SESSION SESSION_USER SET SETS SETOF SHARE SHOW
 	SIMILAR SIMPLE SKIP SMALLINT SNAPSHOT SOME SPLIT SOURCE SQL_P STABLE STANDALONE_P
@@ -9411,14 +9411,15 @@ dostmt_opt_item:
  *****************************************************************************/
 
 CreateCastStmt: CREATE CAST '(' Typename AS Typename ')'
-					WITH FUNCTION function_with_argtypes cast_context
+					WITH opt_safe FUNCTION function_with_argtypes cast_context
 				{
 					CreateCastStmt *n = makeNode(CreateCastStmt);
 
 					n->sourcetype = $4;
 					n->targettype = $6;
-					n->func = $10;
-					n->context = (CoercionContext) $11;
+					n->safe = $9;
+					n->func = $11;
+					n->context = (CoercionContext) $12;
 					n->inout = false;
 					$$ = (Node *) n;
 				}
@@ -9429,6 +9430,7 @@ CreateCastStmt: CREATE CAST '(' Typename AS Typename ')'
 
 					n->sourcetype = $4;
 					n->targettype = $6;
+					n->safe = false;
 					n->func = NULL;
 					n->context = (CoercionContext) $10;
 					n->inout = false;
@@ -9441,6 +9443,7 @@ CreateCastStmt: CREATE CAST '(' Typename AS Typename ')'
 
 					n->sourcetype = $4;
 					n->targettype = $6;
+					n->safe = false;
 					n->func = NULL;
 					n->context = (CoercionContext) $10;
 					n->inout = true;
@@ -9453,6 +9456,9 @@ cast_context:  AS IMPLICIT_P					{ $$ = COERCION_IMPLICIT; }
 		| /*EMPTY*/								{ $$ = COERCION_EXPLICIT; }
 		;
 
+opt_safe: SAFE						{ $$ = true; }
+		| /*EMPTY*/					{ $$ = false; }
+		;
 
 DropCastStmt: DROP CAST opt_if_exists '(' Typename AS Typename ')' opt_drop_behavior
 				{
@@ -18987,6 +18993,7 @@ unreserved_keyword:
 			| ROUTINES
 			| ROWS
 			| RULE
+			| SAFE
 			| SAVEPOINT
 			| SCALAR
 			| SCHEMA
@@ -19636,6 +19643,7 @@ bare_label_keyword:
 			| ROW
 			| ROWS
 			| RULE
+			| SAFE
 			| SAVEPOINT
 			| SCALAR
 			| SCHEMA

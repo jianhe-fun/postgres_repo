@@ -9,7 +9,7 @@ AS 'MODULE_PATHNAME', 'hstore_to_jsonb'
 LANGUAGE C IMMUTABLE STRICT;
 
 CREATE CAST (hstore AS jsonb)
-  WITH FUNCTION hstore_to_jsonb(hstore);
+  WITH SAFE FUNCTION hstore_to_jsonb(hstore);
 
 CREATE FUNCTION hstore_to_jsonb_loose(hstore)
 RETURNS jsonb
