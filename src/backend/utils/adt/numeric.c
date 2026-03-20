@@ -4657,7 +4657,8 @@ float4_numeric(PG_FUNCTION_ARGS)
 	init_var(&result);
 
 	/* Assume we need not worry about leading/trailing spaces */
-	(void) set_var_from_str(buf, buf, &result, &endptr, NULL);
+	if (!set_var_from_str(buf, buf, &result, &endptr, fcinfo->context))
+		PG_RETURN_NULL();
 
 	res = make_result(&result);
 
