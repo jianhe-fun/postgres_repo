@@ -99,6 +99,9 @@ static void ExecBuildAggTransCall(ExprState *state, AggState *aggstate,
 static void ExecInitJsonExpr(JsonExpr *jsexpr, ExprState *state,
 							 Datum *resv, bool *resnull,
 							 ExprEvalStep *scratch);
+static void ExecInitSafeTypeCastExpr(SafeTypeCastExpr *stcexpr, ExprState *state,
+									 Datum *resv, bool *resnull,
+									 ExprEvalStep *scratch);
 static void ExecInitJsonCoercion(ExprState *state, JsonReturning *returning,
 								 ErrorSaveContext *escontext, bool omit_quotes,
 								 bool exists_coerce,
@@ -1734,6 +1737,7 @@ ExecInitExprRec(Expr *node, ExprState *state,
 
 				elemstate->innermost_caseval = palloc_object(Datum);
 				elemstate->innermost_casenull = palloc_object(bool);
+				elemstate->escontext = state->escontext;
 
 				ExecInitExprRec(acoerce->elemexpr, elemstate,
 								&elemstate->resvalue, &elemstate->resnull);
@@ -2205,6 +2209,15 @@ ExecInitExprRec(Expr *node, ExprState *state,
 					/* jump to the following expression */
 					as->d.rowcompare_step.jumpnull = state->steps_len;
 				}
+
+				break;
+			}
+
+		case T_SafeTypeCastExpr:
+			{
+				SafeTypeCastExpr *stcexpr = castNode(SafeTypeCastExpr, node);
+
+				ExecInitSafeTypeCastExpr(stcexpr, state, resv, resnull, &scratch);
 
 				break;
 			}
@@ -2736,12 +2749,16 @@ ExecInitFunc(ExprEvalStep *scratch, Expr *node, List *args, Oid funcid,
 	FunctionCallInfo fcinfo;
 	int			argno;
 	ListCell   *lc;
+	Node	   *context = NULL;
 
 	/* Check permission to call function */
 	aclresult = object_aclcheck(ProcedureRelationId, funcid, GetUserId(), ACL_EXECUTE);
 	if (aclresult != ACLCHECK_OK)
 		aclcheck_error(aclresult, OBJECT_FUNCTION, get_func_name(funcid));
 	InvokeFunctionExecuteHook(funcid);
+
+	if (IsA(node, FuncExpr) && ((FuncExpr *) node)->errorsafe)
+		context = (Node *) state->escontext;
 
 	/*
 	 * Safety check on nargs.  Under normal circumstances this should never
@@ -2769,7 +2786,8 @@ ExecInitFunc(ExprEvalStep *scratch, Expr *node, List *args, Oid funcid,
 
 	/* Initialize function call parameter structure too */
 	InitFunctionCallInfoData(*fcinfo, flinfo,
-							 nargs, inputcollid, NULL, NULL);
+							 nargs, inputcollid,
+							 context, NULL);
 
 	/* Keep extra copies of this info to save an indirection at runtime */
 	scratch->d.func.fn_addr = flinfo->fn_addr;
@@ -4768,6 +4786,52 @@ ExecBuildParamSetEqual(TupleDesc desc,
 	ExecReadyExpr(state);
 
 	return state;
+}
+
+/*
+ * Push steps to evaluate a SafeTypeCastExpr and its various subsidiary
+ * expressions.
+ */
+static void
+ExecInitSafeTypeCastExpr(SafeTypeCastExpr *stcexpr, ExprState *state,
+						 Datum *resv, bool *resnull,
+						 ExprEvalStep *scratch)
+{
+	/*
+	 * Coercion to the target type failed. Falling back to the DEFAULT
+	 * expression from the ON CONVERSION ERROR clause to finish.
+	 */
+	if (stcexpr->castexpr == NULL)
+	{
+		ExecInitExprRec(stcexpr->defexpr, state, resv, resnull);
+
+		return;
+	}
+	else
+	{
+		SafeTypeCastState *stcstate = palloc0_object(SafeTypeCastState);
+		ErrorSaveContext *saved_escontext = state->escontext;
+
+		stcstate->stcexpr = stcexpr;
+		stcstate->escontext.type = T_ErrorSaveContext;
+		state->escontext = &stcstate->escontext;
+
+		/* evaluate argument expression into step's result area */
+		ExecInitExprRec(stcexpr->castexpr, state, resv, resnull);
+		scratch->opcode = EEOP_SAFETYPE_CAST;
+		scratch->d.stcexpr.stcstate = stcstate;
+		ExprEvalPushStep(state, scratch);
+
+		/*
+		 * Evaluate the DEFAULT expression cast. state->escontext must be
+		 * NULL, as this evaluation should not be error-safe.
+		 */
+		state->escontext = NULL;
+		ExecInitExprRec(stcstate->stcexpr->defexpr, state, resv, resnull);
+		state->escontext = saved_escontext;
+
+		stcstate->jump_end = state->steps_len;
+	}
 }
 
 /*
