@@ -1760,6 +1760,19 @@ OidInputFunctionCall(Oid functionId, char *str, Oid typioparam, int32 typmod)
 	return InputFunctionCall(&flinfo, str, typioparam, typmod);
 }
 
+/* error-safe version of OidInputFunctionCall */
+bool
+OidInputFunctionCallSafe(Oid functionId, char *str, Oid typioparam,
+						 int32 typmod, Node *escontext,
+						 Datum *result)
+{
+	FmgrInfo	flinfo;
+
+	fmgr_info(functionId, &flinfo);
+	return InputFunctionCallSafe(&flinfo, str, typioparam, typmod,
+								 escontext, result);
+}
+
 char *
 OidOutputFunctionCall(Oid functionId, Datum val)
 {

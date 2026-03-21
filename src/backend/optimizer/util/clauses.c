@@ -69,6 +69,7 @@ typedef struct
 	List	   *active_fns;
 	Node	   *case_val;
 	bool		estimate;
+	ErrorSaveContext *escontext;
 } eval_const_expressions_context;
 
 typedef struct
@@ -2507,6 +2508,7 @@ eval_const_expressions(PlannerInfo *root, Node *node)
 	context.active_fns = NIL;	/* nothing being recursively simplified */
 	context.case_val = NULL;	/* no CASE being examined */
 	context.estimate = false;	/* safe transformations only */
+	context.escontext = NULL;	/* for error-safe expression evaluation */
 	return eval_const_expressions_mutator(node, &context);
 }
 
@@ -2646,6 +2648,7 @@ estimate_expression_value(PlannerInfo *root, Node *node)
 	context.active_fns = NIL;	/* nothing being recursively simplified */
 	context.case_val = NULL;	/* no CASE being examined */
 	context.estimate = true;	/* unsafe transformations OK */
+	context.escontext = NULL;	/* for error-safe expression evaluation */
 	return eval_const_expressions_mutator(node, &context);
 }
 
@@ -2671,11 +2674,12 @@ estimate_expression_value(PlannerInfo *root, Node *node)
 	(!expression_tree_walker((Node *) (node), contain_non_const_walker, NULL))
 
 /* Generic macro for applying evaluate_expr */
-#define ece_evaluate_expr(node) \
+#define ece_evaluate_expr(node, escontext) \
 	((Node *) evaluate_expr((Expr *) (node), \
 							exprType((Node *) (node)), \
 							exprTypmod((Node *) (node)), \
-							exprCollation((Node *) (node))))
+							exprCollation((Node *) (node)), \
+							escontext))
 
 /*
  * Recursive guts of eval_const_expressions/estimate_expression_value
@@ -2861,6 +2865,7 @@ eval_const_expressions_mutator(Node *node,
 				newexpr->funccollid = expr->funccollid;
 				newexpr->inputcollid = expr->inputcollid;
 				newexpr->args = args;
+				newexpr->errorsafe = expr->errorsafe;
 				newexpr->location = expr->location;
 				return (Node *) newexpr;
 			}
@@ -3136,7 +3141,7 @@ eval_const_expressions_mutator(Node *node,
 
 				if (!has_nonconst_input &&
 					ece_function_is_safe(expr->opfuncid, context))
-					return ece_evaluate_expr(expr);
+					return ece_evaluate_expr(expr, (Node *) context->escontext);
 
 				return (Node *) expr;
 			}
@@ -3156,7 +3161,7 @@ eval_const_expressions_mutator(Node *node,
 				 */
 				if (ece_all_arguments_const(saop) &&
 					ece_function_is_safe(saop->opfuncid, context))
-					return ece_evaluate_expr(saop);
+					return ece_evaluate_expr(saop, (Node *) context->escontext);
 				return (Node *) saop;
 			}
 		case T_BoolExpr:
@@ -3265,6 +3270,42 @@ eval_const_expressions_mutator(Node *node,
 				return (Node *) makeJsonValueExpr((Expr *) raw_expr,
 												  (Expr *) formatted_expr,
 												  copyObject(jve->format));
+			}
+
+		case T_SafeTypeCastExpr:
+			{
+				SafeTypeCastExpr *stc = castNode(SafeTypeCastExpr, node);
+				SafeTypeCastExpr *newexpr = makeNode(SafeTypeCastExpr);
+
+				Node	   *castexpr = (Node *) stc->castexpr;
+				Node	   *defexpr = (Node *) stc->defexpr;
+
+				/*
+				 * No need to fold "source" to a constant. The executor does
+				 * not use it, see ExecInitSafeTypeCastExpr). Additionally,
+				 * castexpr expression tree may already contain the "source"
+				 * node.
+				 */
+				context->escontext = makeNode(ErrorSaveContext);
+				context->escontext->type = T_ErrorSaveContext;
+				context->escontext->error_occurred = false;
+
+				castexpr = eval_const_expressions_mutator(castexpr,
+														  context);
+				pfree(context->escontext);
+				context->escontext = NULL;
+
+				defexpr = eval_const_expressions_mutator(defexpr,
+														 context);
+
+				newexpr->source = (Expr *) stc->source;
+				newexpr->castexpr = (Expr *) castexpr;
+				newexpr->defexpr = (Expr *) defexpr;
+				newexpr->resulttype = stc->resulttype;
+				newexpr->resulttypmod = stc->resulttypmod;
+				newexpr->resultcollid = stc->resultcollid;
+
+				return (Node *) newexpr;
 			}
 
 		case T_SubPlan:
@@ -3419,7 +3460,7 @@ eval_const_expressions_mutator(Node *node,
 				if (ac->arg && IsA(ac->arg, Const) &&
 					ac->elemexpr && !IsA(ac->elemexpr, CoerceToDomain) &&
 					!contain_mutable_functions((Node *) ac->elemexpr))
-					return ece_evaluate_expr(ac);
+					return ece_evaluate_expr(ac, (Node *) context->escontext);
 
 				return (Node *) ac;
 			}
@@ -3615,7 +3656,7 @@ eval_const_expressions_mutator(Node *node,
 				node = ece_generic_processing(node);
 				/* If all arguments are Consts, we can fold to a constant */
 				if (ece_all_arguments_const(node))
-					return ece_evaluate_expr(node);
+					return ece_evaluate_expr(node, (Node *) context->escontext);
 				return node;
 			}
 		case T_CoalesceExpr:
@@ -3698,7 +3739,8 @@ eval_const_expressions_mutator(Node *node,
 					return (Node *) evaluate_expr((Expr *) svf,
 												  svf->type,
 												  svf->typmod,
-												  InvalidOid);
+												  InvalidOid,
+												  NULL);
 				else
 					return copyObject((Node *) svf);
 			}
@@ -3795,7 +3837,7 @@ eval_const_expressions_mutator(Node *node,
 											  newfselect->resulttype,
 											  newfselect->resulttypmod,
 											  newfselect->resultcollid))
-						return ece_evaluate_expr(newfselect);
+						return ece_evaluate_expr(newfselect, (Node *) context->escontext);
 				}
 				return (Node *) newfselect;
 			}
@@ -4125,7 +4167,7 @@ eval_const_expressions_mutator(Node *node,
 				newcre->arg = (Expr *) arg;
 
 				if (arg != NULL && IsA(arg, Const))
-					return ece_evaluate_expr((Node *) newcre);
+					return ece_evaluate_expr((Node *) newcre, (Node *) context->escontext);
 				return (Node *) newcre;
 			}
 		default:
@@ -4546,6 +4588,7 @@ simplify_function(Oid funcid, Oid result_type, int32 result_typmod,
 		fexpr.funccollid = result_collid;
 		fexpr.inputcollid = input_collid;
 		fexpr.args = args;
+		fexpr.errorsafe = false;
 		fexpr.location = -1;
 
 		req.type = T_SupportRequestSimplify;
@@ -5226,10 +5269,11 @@ evaluate_function(Oid funcid, Oid result_type, int32 result_typmod,
 	newexpr->funccollid = result_collid;	/* doesn't matter */
 	newexpr->inputcollid = input_collid;
 	newexpr->args = args;
+	newexpr->errorsafe = context->escontext ? true : false;
 	newexpr->location = -1;
 
 	return evaluate_expr((Expr *) newexpr, result_type, result_typmod,
-						 result_collid);
+						 result_collid, (Node *) context->escontext);
 }
 
 /*
@@ -5338,6 +5382,8 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 	fexpr->funccollid = result_collid;	/* doesn't matter */
 	fexpr->inputcollid = input_collid;
 	fexpr->args = args;
+	/* Cannot evaluate SQL language functions in an error-safe manner. */
+	fexpr->errorsafe = false;
 	fexpr->location = -1;
 
 	/* Fetch the function body */
@@ -5683,10 +5729,13 @@ sql_inline_error_callback(void *arg)
  *
  * We use the executor's routine ExecEvalExpr() to avoid duplication of
  * code and ensure we get the same result as the executor would get.
+ *
+ * When escontext is non-NULL, safely evaluates the constant expression.
+ * Returns NULL on failure rather than throwing an error.
  */
 Expr *
 evaluate_expr(Expr *expr, Oid result_type, int32 result_typmod,
-			  Oid result_collation)
+			  Oid result_collation, Node *escontext)
 {
 	EState	   *estate;
 	ExprState  *exprstate;
@@ -5711,7 +5760,7 @@ evaluate_expr(Expr *expr, Oid result_type, int32 result_typmod,
 	 * Prepare expr for execution.  (Note: we can't use ExecPrepareExpr
 	 * because it'd result in recursively invoking eval_const_expressions.)
 	 */
-	exprstate = ExecInitExpr(expr, NULL);
+	exprstate = ExecInitExprWithContext(expr, NULL, escontext);
 
 	/*
 	 * And evaluate it.
@@ -5730,6 +5779,13 @@ evaluate_expr(Expr *expr, Oid result_type, int32 result_typmod,
 
 	/* Get back to outer memory context */
 	MemoryContextSwitchTo(oldcontext);
+
+	if (SOFT_ERROR_OCCURRED(exprstate->escontext))
+	{
+		FreeExecutorState(estate);
+
+		return NULL;
+	}
 
 	/*
 	 * Must copy result out of sub-context used by expression eval.

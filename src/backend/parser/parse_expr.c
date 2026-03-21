@@ -17,6 +17,7 @@
 
 #include "access/htup_details.h"
 #include "catalog/pg_aggregate.h"
+#include "catalog/pg_cast.h"
 #include "catalog/pg_type.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -38,6 +39,7 @@
 #include "utils/date.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
 #include "utils/timestamp.h"
 #include "utils/typcache.h"
 #include "utils/xml.h"
@@ -62,7 +64,8 @@ static Node *transformMultiAssignRef(ParseState *pstate, MultiAssignRef *maref);
 static Node *transformCaseExpr(ParseState *pstate, CaseExpr *c);
 static Node *transformSubLink(ParseState *pstate, SubLink *sublink);
 static Node *transformArrayExpr(ParseState *pstate, A_ArrayExpr *a,
-								Oid array_type, Oid element_type, int32 typmod);
+								Oid array_type, Oid element_type, int32 typmod,
+								bool *is_coercible);
 static Node *transformRowExpr(ParseState *pstate, RowExpr *r, bool allowDefault);
 static Node *transformCoalesceExpr(ParseState *pstate, CoalesceExpr *c);
 static Node *transformMinMaxExpr(ParseState *pstate, MinMaxExpr *m);
@@ -78,6 +81,11 @@ static Node *transformWholeRowRef(ParseState *pstate,
 								  int sublevels_up, int location);
 static Node *transformIndirection(ParseState *pstate, A_Indirection *ind);
 static Node *transformTypeCast(ParseState *pstate, TypeCast *tc);
+static void CoercionErrorSafeCheck(ParseState *pstate, Node *castexpr,
+								   Node *source, Oid inputType, Oid targetType);
+static void CoercionErrorSafe_Internal(Oid inputType, Oid targetType,
+									   bool *errorsafe_coercion,
+									   bool *userdefined);
 static Node *transformCollateClause(ParseState *pstate, CollateClause *c);
 static Node *transformJsonObjectConstructor(ParseState *pstate,
 											JsonObjectConstructor *ctor);
@@ -166,7 +174,7 @@ transformExprRecurse(ParseState *pstate, Node *expr)
 
 		case T_A_ArrayExpr:
 			result = transformArrayExpr(pstate, (A_ArrayExpr *) expr,
-										InvalidOid, InvalidOid, -1);
+										InvalidOid, InvalidOid, -1, NULL);
 			break;
 
 		case T_TypeCast:
@@ -566,6 +574,7 @@ transformColumnRef(ParseState *pstate, ColumnRef *cref)
 		case EXPR_KIND_VALUES_SINGLE:
 		case EXPR_KIND_CHECK_CONSTRAINT:
 		case EXPR_KIND_DOMAIN_CHECK:
+		case EXPR_KIND_CAST_DEFAULT:
 		case EXPR_KIND_FUNCTION_DEFAULT:
 		case EXPR_KIND_INDEX_EXPRESSION:
 		case EXPR_KIND_INDEX_PREDICATE:
@@ -1840,6 +1849,9 @@ transformSubLink(ParseState *pstate, SubLink *sublink)
 		case EXPR_KIND_DOMAIN_CHECK:
 			err = _("cannot use subquery in check constraint");
 			break;
+		case EXPR_KIND_CAST_DEFAULT:
+			err = _("cannot use subquery in CAST DEFAULT expression");
+			break;
 		case EXPR_KIND_COLUMN_DEFAULT:
 		case EXPR_KIND_FUNCTION_DEFAULT:
 			err = _("cannot use subquery in DEFAULT expression");
@@ -2030,10 +2042,14 @@ transformSubLink(ParseState *pstate, SubLink *sublink)
  * If the caller specifies the target type, the resulting array will
  * be of exactly that type.  Otherwise we try to infer a common type
  * for the elements using select_common_type().
+ *
+ * is_coercible is typically NULL, except during parse analysis for
+ * CAST(... DEFAULT ... ON CONVERSION ERROR). When provided, it defaults
+ * to true but will be set to false if coercing array elements fails.
  */
 static Node *
 transformArrayExpr(ParseState *pstate, A_ArrayExpr *a,
-				   Oid array_type, Oid element_type, int32 typmod)
+				   Oid array_type, Oid element_type, int32 typmod, bool *is_coercible)
 {
 	ArrayExpr  *newa = makeNode(ArrayExpr);
 	List	   *newelems = NIL;
@@ -2041,6 +2057,7 @@ transformArrayExpr(ParseState *pstate, A_ArrayExpr *a,
 	ListCell   *element;
 	Oid			coerce_type;
 	bool		coerce_hard;
+	ErrorSaveContext escontext = {T_ErrorSaveContext};
 
 	/*
 	 * Transform the element expressions
@@ -2064,9 +2081,10 @@ transformArrayExpr(ParseState *pstate, A_ArrayExpr *a,
 									  (A_ArrayExpr *) e,
 									  array_type,
 									  element_type,
-									  typmod);
+									  typmod,
+									  is_coercible);
 			/* we certainly have an array here */
-			Assert(array_type == InvalidOid || array_type == exprType(newe));
+			Assert(is_coercible || array_type == InvalidOid || array_type == exprType(newe));
 			newa->multidims = true;
 		}
 		else
@@ -2107,6 +2125,8 @@ transformArrayExpr(ParseState *pstate, A_ArrayExpr *a,
 	}
 	else
 	{
+		Assert(is_coercible == NULL);
+
 		/* Can't handle an empty array without a target type */
 		if (newelems == NIL)
 			ereport(ERROR,
@@ -2153,28 +2173,58 @@ transformArrayExpr(ParseState *pstate, A_ArrayExpr *a,
 	 * If the array's type was merely derived from the common type of its
 	 * elements, then the elements are implicitly coerced to the common type.
 	 * This is consistent with other uses of select_common_type().
+	 *
+	 * If is_coercible is not NULL, check whether each element can be coerced
+	 * to the target type, similar to what is done in transformTypeCast.
 	 */
 	foreach(element, newelems)
 	{
 		Node	   *e = (Node *) lfirst(element);
-		Node	   *newe;
+		Node	   *newe = NULL;
 
 		if (coerce_hard)
 		{
-			newe = coerce_to_target_type(pstate, e,
-										 exprType(e),
-										 coerce_type,
-										 typmod,
-										 COERCION_EXPLICIT,
-										 COERCE_EXPLICIT_CAST,
-										 -1);
-			if (newe == NULL)
-				ereport(ERROR,
-						(errcode(ERRCODE_CANNOT_COERCE),
-						 errmsg("cannot cast type %s to %s",
-								format_type_be(exprType(e)),
-								format_type_be(coerce_type)),
-						 parser_errposition(pstate, exprLocation(e))));
+			/*
+			 * Cannot coerce, just append the transformed element expression
+			 * to the list.
+			 */
+			if (is_coercible && (!*is_coercible))
+				newe = e;
+			else
+			{
+				Node	   *ecopy = NULL;
+
+				if (is_coercible)
+					ecopy = copyObject(e);
+
+				newe = coerce_to_target_type_extended(pstate, e,
+													  exprType(e),
+													  coerce_type,
+													  typmod,
+													  COERCION_EXPLICIT,
+													  COERCE_EXPLICIT_CAST,
+													  -1,
+													  (Node *) &escontext);
+				if (newe == NULL)
+				{
+					/*
+					 * Cannot coerce. Raise an error or append the transformed
+					 * element to the list.
+					 */
+					if (!is_coercible)
+						ereport(ERROR,
+								(errcode(ERRCODE_CANNOT_COERCE),
+								 errmsg("cannot cast type %s to %s",
+										format_type_be(exprType(e)),
+										format_type_be(coerce_type)),
+								 parser_errposition(pstate, exprLocation(e))));
+					else
+					{
+						newe = ecopy;
+						*is_coercible = false;
+					}
+				}
+			}
 		}
 		else
 			newe = coerce_to_common_type(pstate, e,
@@ -2723,16 +2773,62 @@ transformWholeRowRef(ParseState *pstate, ParseNamespaceItem *nsitem,
 static Node *
 transformTypeCast(ParseState *pstate, TypeCast *tc)
 {
-	Node	   *result;
+	SafeTypeCastExpr *stc;
+	Node	   *castexpr = NULL;
+	Node	   *defexpr = NULL;
 	Node	   *arg = tc->arg;
+	Node	   *source;
 	Node	   *expr;
 	Oid			inputType;
 	Oid			targetType;
+	Oid			targetTypecoll;
 	int32		targetTypmod;
 	int			location;
+	bool		is_coercible = true;
+	ErrorSaveContext escontext = {T_ErrorSaveContext};
 
 	/* Look up the type name first */
 	typenameTypeIdAndMod(pstate, tc->typeName, &targetType, &targetTypmod);
+
+	targetTypecoll = get_typcollation(targetType);
+
+	/* looking at DEFAULT expression */
+	if (tc->defexpr)
+	{
+		Oid			defColl;
+
+		defexpr = transformExpr(pstate, tc->defexpr, EXPR_KIND_CAST_DEFAULT);
+
+		defexpr = coerce_to_target_type(pstate, defexpr, exprType(defexpr),
+										targetType, targetTypmod,
+										COERCION_EXPLICIT,
+										COERCE_EXPLICIT_CAST,
+										exprLocation(defexpr));
+		if (defexpr == NULL)
+			ereport(ERROR,
+					errcode(ERRCODE_CANNOT_COERCE),
+					errmsg("cannot coerce %s expression to type %s",
+						   "CAST DEFAULT",
+						   format_type_be(targetType)),
+					parser_coercion_errposition(pstate, exprLocation(tc->defexpr), defexpr));
+
+		assign_expr_collations(pstate, defexpr);
+
+		/*
+		 * The collation of DEFAULT expression must match the collation of the
+		 * target type.
+		 */
+		defColl = exprCollation(defexpr);
+
+		if (targetTypecoll != defColl)
+			ereport(ERROR,
+					errcode(ERRCODE_DATATYPE_MISMATCH),
+					errmsg("collation of CAST DEFAULT expression conflicts with target type collation"),
+					errdetail("\"%s\" versus \"%s\"",
+							  get_collation_name(defColl),
+							  get_collation_name(targetTypecoll)),
+					parser_errposition(pstate, exprLocation(defexpr)));
+	}
 
 	/*
 	 * If the subject of the typecast is an ARRAY[] construct and the target
@@ -2762,7 +2858,8 @@ transformTypeCast(ParseState *pstate, TypeCast *tc)
 									  (A_ArrayExpr *) arg,
 									  targetBaseType,
 									  elementType,
-									  targetBaseTypmod);
+									  targetBaseTypmod,
+									  defexpr ? &is_coercible : NULL);
 		}
 		else
 			expr = transformExprRecurse(pstate, arg);
@@ -2783,20 +2880,214 @@ transformTypeCast(ParseState *pstate, TypeCast *tc)
 	if (location < 0)
 		location = tc->typeName->location;
 
-	result = coerce_to_target_type(pstate, expr, inputType,
-								   targetType, targetTypmod,
-								   COERCION_EXPLICIT,
-								   COERCE_EXPLICIT_CAST,
-								   location);
-	if (result == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_CANNOT_COERCE),
-				 errmsg("cannot cast type %s to %s",
-						format_type_be(inputType),
-						format_type_be(targetType)),
-				 parser_coercion_errposition(pstate, location, expr)));
+	/*
+	 * coerce_to_target_type_extended is unlikely to modify the source
+	 * expression, but we still create a copy beforehand. This allows
+	 * SafeTypeCastExpr to receive the transformed source expression
+	 * unchanged.
+	 */
+	source = copyObject(expr);
 
-	return result;
+	if (is_coercible)
+	{
+		castexpr = coerce_to_target_type_extended(pstate, expr, inputType,
+												  targetType, targetTypmod,
+												  COERCION_EXPLICIT,
+												  COERCE_EXPLICIT_CAST,
+												  location,
+												  defexpr ? (Node *) &escontext : NULL);
+
+		/* Cannot coerce. Set is_coercible to false or raise an error */
+		if (!castexpr)
+		{
+			is_coercible = false;
+
+			if (!defexpr)
+				ereport(ERROR,
+						(errcode(ERRCODE_CANNOT_COERCE),
+						 errmsg("cannot cast type %s to %s",
+								format_type_be(inputType),
+								format_type_be(targetType)),
+						 parser_coercion_errposition(pstate, location, expr)));
+		}
+
+		/* No DEFAULT ... ON CONVERSION ERROR, exit now */
+		if (!defexpr)
+			return castexpr;
+	}
+
+	/* Further check for CAST(... DEFAULT ... ON CONVERSION ERROR) */
+	CoercionErrorSafeCheck(pstate, castexpr, source, inputType,
+						   targetType);
+
+	Assert(is_coercible || castexpr == NULL);
+
+	stc = makeNode(SafeTypeCastExpr);
+	stc->source = (Expr *) source;
+	stc->castexpr = (Expr *) castexpr;
+	stc->defexpr = (Expr *) defexpr;
+	stc->resulttype = targetType;
+	stc->resulttypmod = targetTypmod;
+	stc->resultcollid = targetTypecoll;
+	stc->location = location;
+
+	return (Node *) stc;
+}
+
+/*
+ * Check type coercion is error safe or not.  If not then report error
+ */
+static void
+CoercionErrorSafeCheck(ParseState *pstate, Node *castexpr, Node *source,
+					   Oid inputType, Oid targetType)
+{
+	bool		errorsafe_coercion = true;
+	bool		userdefined = false;
+
+	/*
+	 * Binary coercion cast is error-safe, CoerceViaIO can also be evaluated
+	 * in an error-safe manner. Skip these cases.
+	 */
+	if (castexpr == NULL ||
+		IsBinaryCoercible(inputType, targetType) ||
+		IsA(castexpr, CoerceViaIO))
+		return;
+
+	CoercionErrorSafe_Internal(inputType, targetType,
+							   &errorsafe_coercion,
+							   &userdefined);
+
+	if (!errorsafe_coercion)
+		ereport(ERROR,
+				errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("cannot cast type %s to %s when %s expression is specified in %s",
+					   format_type_be(inputType),
+					   format_type_be(targetType),
+					   "DEFAULT",
+					   "CAST ... ON CONVERSION ERROR"),
+				userdefined
+				? errhint("Safe type cast for user-defined types are not yet supported.")
+				: errhint("Explicit cast is defined but definition is not error safe."),
+				parser_errposition(pstate, exprLocation(source)));
+}
+
+static void
+CoercionErrorSafe_Internal(Oid inputType, Oid targetType,
+						   bool *errorsafe_coercion, bool *userdefined)
+{
+	HeapTuple	tuple;
+
+	char		input_typtype = get_typtype(inputType);
+	char		target_typtype = get_typtype(targetType);
+
+	/* since this function recurses, it could be driven to stack overflow */
+	check_stack_depth();
+
+	Assert(errorsafe_coercion != NULL);
+	Assert(userdefined != NULL);
+
+	if (!(*errorsafe_coercion))
+		return;
+
+	if (input_typtype == TYPTYPE_DOMAIN &&
+		target_typtype == TYPTYPE_DOMAIN)
+	{
+		CoercionErrorSafe_Internal(getBaseType(inputType),
+								   getBaseType(targetType),
+								   errorsafe_coercion,
+								   userdefined);
+		return;
+	}
+	else if (input_typtype == TYPTYPE_DOMAIN)
+	{
+		CoercionErrorSafe_Internal(getBaseType(inputType),
+								   targetType,
+								   errorsafe_coercion,
+								   userdefined);
+		return;
+	}
+	else if (target_typtype == TYPTYPE_DOMAIN)
+	{
+		CoercionErrorSafe_Internal(inputType,
+								   getBaseType(targetType),
+								   errorsafe_coercion,
+								   userdefined);
+		return;
+	}
+	else if ((input_typtype != TYPTYPE_BASE && input_typtype != TYPTYPE_PSEUDO && inputType > FirstUnpinnedObjectId)
+			 || (target_typtype != TYPTYPE_BASE && targetType > FirstUnpinnedObjectId))
+	{
+		/*
+		 * Input expression can be UNKNOWN Const, and UNKNOWN is typtype is
+		 * TYPTYPE_PSEUDO
+		 */
+
+		/*
+		 * Composite-to-composite casting is not implemented, so error-safe
+		 * cast between them should not be possible; we forbid it here.
+		 *
+		 * Our type system does not automatically cast a user-defined range
+		 * type to an built-in range type, even if their base element types
+		 * are the same. There may be complex edge cases to consider, safer to
+		 * simply disallow error-safe casting for them now.
+		 */
+		*errorsafe_coercion = false;
+
+		return;
+	}
+	else
+	{
+		Oid			input_typelem = get_element_type(inputType);
+		Oid			target_typelem = get_element_type(targetType);
+
+		if (OidIsValid(input_typelem) && OidIsValid(target_typelem))
+		{
+			/* recurse into array element type */
+			CoercionErrorSafe_Internal(input_typelem,
+									   target_typelem,
+									   errorsafe_coercion,
+									   userdefined);
+			return;
+		}
+	}
+
+	/*
+	 * Casts involving type MONEY are not error safe.  Type CIRCLE to type
+	 * POLYGON cast is unsafe because it relies on a SQL-language function;
+	 * only C-language functions are currently supported for error safe casts.
+	 */
+	if (inputType == MONEYOID ||
+		targetType == MONEYOID ||
+		(inputType == CIRCLEOID && targetType == POLYGONOID))
+	{
+		*errorsafe_coercion = false;
+		return;
+	}
+
+	if (inputType != targetType)
+	{
+		tuple = SearchSysCache2(CASTSOURCETARGET,
+								ObjectIdGetDatum(inputType),
+								ObjectIdGetDatum(targetType));
+
+		/*
+		 * A pg_cast entry might not exist for this specific cast; for
+		 * example, when using CoerceViaIO.
+		 */
+		if (HeapTupleIsValid(tuple))
+		{
+			Form_pg_cast castForm = (Form_pg_cast) GETSTRUCT(tuple);
+
+			if (castForm->castfunc > FirstUnpinnedObjectId)
+			{
+				*errorsafe_coercion = false;
+				*userdefined = true;
+			}
+			ReleaseSysCache(tuple);
+		}
+		else if (inputType > FirstUnpinnedObjectId && targetType > FirstUnpinnedObjectId)
+			*errorsafe_coercion = false;
+	}
 }
 
 /*
@@ -3212,6 +3503,8 @@ ParseExprKindName(ParseExprKind exprKind)
 		case EXPR_KIND_CHECK_CONSTRAINT:
 		case EXPR_KIND_DOMAIN_CHECK:
 			return "CHECK";
+		case EXPR_KIND_CAST_DEFAULT:
+			return "CAST DEFAULT";
 		case EXPR_KIND_COLUMN_DEFAULT:
 		case EXPR_KIND_FUNCTION_DEFAULT:
 			return "DEFAULT";
