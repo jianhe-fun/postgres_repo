@@ -33,6 +33,9 @@ extern PGDLLIMPORT int extra_float_digits;
 pg_noreturn extern void float_overflow_error(void);
 pg_noreturn extern void float_underflow_error(void);
 pg_noreturn extern void float_zero_divide_error(void);
+extern float8 float_overflow_error_ext(struct Node *escontext);
+extern float8 float_underflow_error_ext(struct Node *escontext);
+extern float8 float_zero_divide_error_ext(struct Node *escontext);
 extern int	is_infinite(float8 val);
 extern float8 float8in_internal(char *num, char **endptr_p,
 								const char *type_name, const char *orig_string,
