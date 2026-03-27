@@ -9,6 +9,10 @@ INSERT INTO xmltest VALUES (3, '<wrong');
 
 SELECT * FROM xmltest;
 
+SELECT CAST('<wrong'::text AS xml DEFAULT NULL ON CONVERSION ERROR) as to_xml;
+ERROR:  unsupported XML feature
+DETAIL:  This functionality requires the server to be built with libxml support.
+
 -- test non-throwing API, too
 SELECT pg_input_is_valid('<value>one</value>', 'xml');
 SELECT pg_input_is_valid('<value>one</', 'xml');
