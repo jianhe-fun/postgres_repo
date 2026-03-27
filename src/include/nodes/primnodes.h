@@ -771,6 +771,42 @@ typedef enum CoercionForm
 } CoercionForm;
 
 /*
+ * SafeTypeCastExpr -
+ *		Transformed representation of
+ * 		CAST(expr AS typename DEFAULT expr ON CONVERSION ERROR)
+ * 		CAST(expr AS typename NULL ON CONVERSION ERROR)
+ */
+typedef struct SafeTypeCastExpr
+{
+	Expr		xpr;
+
+	/*
+	 * Transformed source expression from the parser. Constant folding
+	 * (eval_const_expressions) is skipped because ExecInitSafeTypeCastExpr
+	 * does not use this node. Therefore, it may contain a CollateExpr node,
+	 * which ExecInitExprRec cannot handle. However, this is still required
+	 * for deparsing purposes.
+	 *
+	 * For example, "CAST(1 AS date DEFAULT NULL ON CONVERSION ERROR)", the
+	 * castexpr is now NULL. To deparse it, we need this transformed "source"
+	 * expression.
+	 */
+	Expr	   *source;
+	/* transformed cast expression, NULL means cannot coerce to target type */
+	Expr	   *castexpr pg_node_attr(query_jumble_ignore);
+	/* Fall-back to the default expression if cast evaluation fails */
+	Expr	   *defexpr;
+	/* target type Oid */
+	Oid			resulttype;
+	/* target type modifier */
+	int32		resulttypmod;
+	/* OID of collation, or InvalidOid if none */
+	Oid			resultcollid;
+	/* token location, or -1 if unknown */
+	ParseLoc	location;
+} SafeTypeCastExpr;
+
+/*
  * FuncExpr - expression node for a function call
  *
  * Collation information is irrelevant for the query jumbling, only the
