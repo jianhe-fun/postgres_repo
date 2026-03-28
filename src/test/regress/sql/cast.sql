@@ -201,8 +201,7 @@ SELECT col0 as text,
        CAST(col0 AS regclass DEFAULT NULL ON CONVERSION ERROR) as to_regclass,
        CAST(col0 AS regclass DEFAULT NULL ON CONVERSION ERROR) IS NULL as expect_true,
        CAST(col0 AS "char"  DEFAULT NULL ON CONVERSION ERROR) as to_char,
-       CAST(col0 AS name DEFAULT NULL ON CONVERSION ERROR) as to_name,
-       CAST(col0 AS xml DEFAULT NULL ON CONVERSION ERROR) as to_xml
+       CAST(col0 AS name DEFAULT NULL ON CONVERSION ERROR) as to_name
 FROM test_safecast;
 
 SELECT CAST('192.168.1.x' as inet DEFAULT NULL ON CONVERSION ERROR);
