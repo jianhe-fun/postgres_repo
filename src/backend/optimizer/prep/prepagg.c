@@ -358,6 +358,17 @@ preprocess_aggrefs_walker(Node *node, PlannerInfo *root)
 		 */
 		return false;
 	}
+	if (IsA(node, SafeTypeCastExpr))
+	{
+		SafeTypeCastExpr *castexpr = (SafeTypeCastExpr *) node;
+
+		/*
+		 * "source" may also contain an Aggref node, but since it is kept only
+		 * for deparsing purposes, we must not recurse into it when processing
+		 * aggregate nodes here.
+		 */
+		return expression_tree_walker((Node *) castexpr->castexpr, preprocess_aggrefs_walker, root);
+	}
 	Assert(!IsA(node, SubLink));
 	return expression_tree_walker(node, preprocess_aggrefs_walker, root);
 }

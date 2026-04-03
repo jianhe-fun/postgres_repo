@@ -99,6 +99,9 @@ static void ExecBuildAggTransCall(ExprState *state, AggState *aggstate,
 static void ExecInitJsonExpr(JsonExpr *jsexpr, ExprState *state,
 							 Datum *resv, bool *resnull,
 							 ExprEvalStep *scratch);
+static void ExecInitSafeTypeCastExpr(SafeTypeCastExpr *stcexpr, ExprState *state,
+									 Datum *resv, bool *resnull,
+									 ExprEvalStep *scratch);
 static void ExecInitJsonCoercion(ExprState *state, JsonReturning *returning,
 								 ErrorSaveContext *escontext, bool omit_quotes,
 								 bool exists_coerce,
@@ -1734,6 +1737,7 @@ ExecInitExprRec(Expr *node, ExprState *state,
 
 				elemstate->innermost_caseval = palloc_object(Datum);
 				elemstate->innermost_casenull = palloc_object(bool);
+				elemstate->escontext = state->escontext;
 
 				ExecInitExprRec(acoerce->elemexpr, elemstate,
 								&elemstate->resvalue, &elemstate->resnull);
@@ -2205,6 +2209,15 @@ ExecInitExprRec(Expr *node, ExprState *state,
 					/* jump to the following expression */
 					as->d.rowcompare_step.jumpnull = state->steps_len;
 				}
+
+				break;
+			}
+
+		case T_SafeTypeCastExpr:
+			{
+				SafeTypeCastExpr *stcexpr = castNode(SafeTypeCastExpr, node);
+
+				ExecInitSafeTypeCastExpr(stcexpr, state, resv, resnull, &scratch);
 
 				break;
 			}
@@ -2769,7 +2782,8 @@ ExecInitFunc(ExprEvalStep *scratch, Expr *node, List *args, Oid funcid,
 
 	/* Initialize function call parameter structure too */
 	InitFunctionCallInfoData(*fcinfo, flinfo,
-							 nargs, inputcollid, NULL, NULL);
+							 nargs, inputcollid,
+							 (Node *) state->escontext, NULL);
 
 	/* Keep extra copies of this info to save an indirection at runtime */
 	scratch->d.func.fn_addr = flinfo->fn_addr;
@@ -4768,6 +4782,48 @@ ExecBuildParamSetEqual(TupleDesc desc,
 	ExecReadyExpr(state);
 
 	return state;
+}
+
+/*
+ * Push steps to evaluate a SafeTypeCastExpr and its various subsidiary
+ * expressions.
+ */
+static void
+ExecInitSafeTypeCastExpr(SafeTypeCastExpr *stcexpr, ExprState *state,
+						 Datum *resv, bool *resnull,
+						 ExprEvalStep *scratch)
+{
+	/*
+	 * If there's no cast expression (castexpr == NULL), only the DEFAULT
+	 * expression needs to be evaluated; set it up and return early.
+	 */
+	if (stcexpr->castexpr == NULL)
+	{
+		ExecInitExprRec(stcexpr->defexpr, state, resv, resnull);
+
+		return;
+	}
+	else
+	{
+		SafeTypeCastState *stcstate = palloc0_object(SafeTypeCastState);
+		ErrorSaveContext *saved_escontext = state->escontext;
+
+		stcstate->stcexpr = stcexpr;
+		stcstate->escontext.type = T_ErrorSaveContext;
+		state->escontext = &stcstate->escontext;
+
+		/* evaluate argument expression into step's result area */
+		ExecInitExprRec(stcexpr->castexpr, state, resv, resnull);
+		scratch->opcode = EEOP_SAFETYPE_CAST;
+		scratch->d.stcexpr.stcstate = stcstate;
+		ExprEvalPushStep(state, scratch);
+
+		/* evaluate DEFAULT expression using the prior state->escontext */
+		state->escontext = saved_escontext;
+		ExecInitExprRec(stcstate->stcexpr->defexpr, state, resv, resnull);
+
+		stcstate->jump_end = state->steps_len;
+	}
 }
 
 /*
