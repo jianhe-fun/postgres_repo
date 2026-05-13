@@ -370,6 +370,17 @@ copy tab_progress_reporting from :'filename'
 	where (salary < 2000);
 
 -- Generate COPY FROM report with PIPE, with some skipped tuples.
+create unique index tab_progress_reporting_idx1 on tab_progress_reporting(name);
+create temp table conflict_tbl(copy_tbl oid, filename text, lineno bigint, line text);
+copy tab_progress_reporting from stdin(on_conflict table, conflict_table 'conflict_tbl');
+sharon	25	(115,12)	1000	sam
+bill	20	(111,10)	1000	sharon
+bill	20	(111,10)	1000	sharon
+\.
+drop index tab_progress_reporting_idx1;
+drop table conflict_tbl;
+
+-- Generate COPY FROM report with PIPE, with some skipped tuples.
 copy tab_progress_reporting from stdin(on_error ignore);
 sharon	x	(15,12)	x	sam
 sharon	25	(15,12)	1000	sam
@@ -503,11 +514,16 @@ SELECT tableoid::regclass, id % 2 = 0 is_even, count(*) from parted_si GROUP BY 
 
 DROP TABLE parted_si;
 
--- ensure COPY FREEZE errors for foreign tables
+-- ensure COPY FREEZE/ON_CONFLICT errors for foreign tables
 begin;
+create temp table conflict_tbl(copy_tbl oid, filename text, lineno bigint, line text);
 create foreign data wrapper copytest_wrapper;
 create server copytest_server foreign data wrapper copytest_wrapper;
 create foreign table copytest_foreign_table (a int) server copytest_server;
+SAVEPOINT s1;
+copy copytest_foreign_table from stdin (on_conflict table, conflict_table 'conflict_tbl');
+\.
+ROLLBACK TO SAVEPOINT s1;
 copy copytest_foreign_table from stdin (freeze);
 1
 \.

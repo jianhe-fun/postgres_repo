@@ -42,16 +42,21 @@
 #include "miscadmin.h"
 #include "nodes/miscnodes.h"
 #include "optimizer/optimizer.h"
+#include "parser/parse_relation.h"
 #include "pgstat.h"
 #include "rewrite/rewriteHandler.h"
 #include "storage/fd.h"
 #include "tcop/tcopprot.h"
+#include "utils/acl.h"
+#include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/portal.h"
+#include "utils/regproc.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/typcache.h"
+#include "utils/syscache.h"
 
 /*
  * No more than this many tuples per CopyMultiInsertBuffer
@@ -120,6 +125,11 @@ static void CopyFromBinaryInFunc(CopyFromState cstate, Oid atttypid,
 								 FmgrInfo *finfo, Oid *typioparam);
 static void CopyFromBinaryStart(CopyFromState cstate, TupleDesc tupDesc);
 static void CopyFromBinaryEnd(CopyFromState cstate);
+static void CopyFromConflictTableCheck(CopyFromState cstate);
+static void RangeVarCallbackForCopyConflictTable(const RangeVar *rv, Oid relid, Oid oldrelid,
+												 void *arg);
+static void CopyFromConflictTableInit(CopyFromState cstate);
+static void CopyConflictTablePermissionCheck(ParseState *pstate, Relation rel);
 
 
 /*
@@ -801,6 +811,25 @@ CopyFrom(CopyFromState cstate)
 	bool		has_before_insert_row_trig;
 	bool		has_instead_insert_row_trig;
 	bool		leafpart_use_multi_insert = false;
+	ModifyTableContext mtcontext;	/* Used only when ON_CONFLICT is specified */
+	TupleTableSlot *conflictslot = NULL;
+	ModifyTable *node = makeNode(ModifyTable);
+
+	node->operation = CMD_INSERT;
+	node->canSetTag = false;
+	node->rootRelation = 0;
+	node->resultRelations = list_make1_int(1);
+	node->onConflictAction = ONCONFLICT_NONE;
+	node->arbiterIndexes = NIL;
+
+	if (cstate->opts.on_conflict == ONCONFLICT_TABLE)
+	{
+		node->onConflictAction = ONCONFLICT_NOTHING;
+		node->canSetTag = true;
+		conflictslot = ExecInitExtraTupleSlot(estate,
+											  RelationGetDescr(cstate->conflictRel),
+											  &TTSOpsVirtual);
+	}
 
 	Assert(cstate->rel);
 	Assert(list_length(cstate->range_table) == 1);
@@ -841,6 +870,18 @@ CopyFrom(CopyFromState cstate)
 					 errmsg("cannot copy to non-table relation \"%s\"",
 							RelationGetRelationName(cstate->rel))));
 	}
+
+	/*
+	 * If COPY ON_CONFLICT is specified, the target relation must be either a
+	 * plain table or a partitioned table.
+	 */
+	if (cstate->opts.on_conflict == ONCONFLICT_TABLE &&
+		cstate->rel->rd_rel->relkind != RELKIND_RELATION &&
+		cstate->rel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+		ereport(ERROR,
+				errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				errmsg("cannot perform COPY ON_CONFLICT on relation \"%s\"", RelationGetRelationName(cstate->rel)),
+				errdetail_relkind_not_supported(cstate->rel->rd_rel->relkind));
 
 	/*
 	 * If the target file is new-in-transaction, we assume that checking FSM
@@ -911,6 +952,14 @@ CopyFrom(CopyFromState cstate)
 	}
 
 	/*
+	 * Copy other important information into the EState, to ensure this will
+	 * be aligned with ExecutorStart.
+	 */
+	estate->es_output_cid = mycid;
+	estate->es_snapshot = RegisterSnapshot(GetActiveSnapshot());
+	estate->es_crosscheck_snapshot = InvalidSnapshot;
+
+	/*
 	 * We need a ResultRelInfo so we can use the regular executor's
 	 * index-entry-making machinery.  (There used to be a huge amount of code
 	 * here that basically duplicated execUtils.c ...)
@@ -923,16 +972,17 @@ CopyFrom(CopyFromState cstate)
 	/* Verify the named relation is a valid target for INSERT */
 	CheckValidResultRel(resultRelInfo, CMD_INSERT, ONCONFLICT_NONE, NIL);
 
-	ExecOpenIndices(resultRelInfo, false);
+	ExecOpenIndices(resultRelInfo, cstate->opts.on_conflict != ONCONFLICT_NONE);
 
 	/*
 	 * Set up a ModifyTableState so we can let FDW(s) init themselves for
 	 * foreign-table result relation(s).
 	 */
 	mtstate = makeNode(ModifyTableState);
-	mtstate->ps.plan = NULL;
+	mtstate->ps.plan = (Plan *) node;
 	mtstate->ps.state = estate;
 	mtstate->operation = CMD_INSERT;
+	mtstate->canSetTag = node->canSetTag;
 	mtstate->mt_nrels = 1;
 	mtstate->resultRelInfo = resultRelInfo;
 	mtstate->rootResultRelInfo = resultRelInfo;
@@ -981,6 +1031,13 @@ CopyFrom(CopyFromState cstate)
 	 */
 	if (cstate->rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 		proute = ExecSetupPartitionTupleRouting(estate, cstate->rel);
+
+	mtstate->mt_partition_tuple_routing = proute;
+
+	if (cstate->opts.on_conflict == ONCONFLICT_TABLE)
+		CopyFromConflictTableInit(cstate);
+	else
+		cstate->mtcontext = NULL;
 
 	if (cstate->whereClause)
 		cstate->qualexpr = ExecInitQual(castNode(List, cstate->whereClause),
@@ -1052,6 +1109,19 @@ CopyFrom(CopyFromState cstate)
 		 */
 		insertMethod = CIM_SINGLE;
 	}
+	else if (cstate->opts.on_conflict == ONCONFLICT_TABLE)
+	{
+		/*
+		 * Cannot use multi-inserts when ON_CONFLICT option is specified as
+		 * TABLE.
+		 *
+		 * We use ExecInsert() for each row individually because we need its
+		 * INSERT ON CONFLICT DO NOTHING handling to detect unique constraint
+		 * violations on the COPY source table. and ExecInsert() is
+		 * incompatible with COPY's bulk insert path.
+		 */
+		insertMethod = CIM_SINGLE;
+	}
 	else
 	{
 		/*
@@ -1103,6 +1173,23 @@ CopyFrom(CopyFromState cstate)
 	 */
 	ExecBSInsertTriggers(estate, resultRelInfo);
 
+	if (cstate->opts.on_conflict == ONCONFLICT_TABLE)
+	{
+		ModifyTableState *conflict_mstate = cstate->mtcontext->mtstate;
+
+		/*
+		 * Fire BEFORE STATEMENT triggers before proceeding, we fire BEFORE
+		 * STATEMENT on CONFLICT_TABLE only once.
+		 */
+		if (conflict_mstate->fireBSTriggers)
+		{
+			ExecBSInsertTriggers(conflict_mstate->ps.state,
+								 conflict_mstate->rootResultRelInfo);
+
+			conflict_mstate->fireBSTriggers = false;
+		}
+	}
+
 	econtext = GetPerTupleExprContext(estate);
 
 	/* Set up callback to identify error line number */
@@ -1110,6 +1197,8 @@ CopyFrom(CopyFromState cstate)
 	errcallback.arg = cstate;
 	errcallback.previous = error_context_stack;
 	error_context_stack = &errcallback;
+	mtcontext.mtstate = mtstate;
+	mtcontext.estate = estate;
 
 	for (;;)
 	{
@@ -1164,7 +1253,7 @@ CopyFrom(CopyFromState cstate)
 
 			/* Report that this tuple was skipped by the ON_ERROR clause */
 			pgstat_progress_update_param(PROGRESS_COPY_TUPLES_SKIPPED,
-										 cstate->num_errors);
+										 (cstate->num_conflicts + cstate->num_errors));
 
 			if (cstate->opts.reject_limit > 0 &&
 				cstate->num_errors > cstate->opts.reject_limit)
@@ -1202,6 +1291,100 @@ CopyFrom(CopyFromState cstate)
 											 ++excluded);
 				continue;
 			}
+		}
+
+		/*
+		 * For COPY FROM(ON_CONFLICT TABLE), we use ExecInsert() to insert the
+		 * input data into the destination table. The conflict_relOId
+		 * indicates whether a unique constraint violation occurred for ON
+		 * CONFLICT. If a conflict happened, we construct the conflict tuple
+		 * and insert it into the CONFLICT_TABLE.
+		 */
+		if (cstate->opts.on_conflict == ONCONFLICT_TABLE)
+		{
+			Oid			conflict_relOId = InvalidOid;
+
+			Assert(IsA(mtcontext.mtstate->ps.plan, ModifyTable));
+			Assert(((ModifyTable *) mtcontext.mtstate->ps.plan)->onConflictAction == ONCONFLICT_NOTHING);
+
+			mtcontext.estate->es_processed = 0;
+
+			ExecInsert(&mtcontext, resultRelInfo, myslot,
+					   mtstate->canSetTag, NULL, NULL,
+					   &conflict_relOId);
+
+			if (!OidIsValid(conflict_relOId))
+				processed = processed + mtcontext.estate->es_processed;
+			else
+			{
+				int			j = 0;
+				Datum	   *newvalues;
+				bool	   *nulls;
+
+				ModifyTableState *conflict_mstate = cstate->mtcontext->mtstate;
+				TupleDesc	tupdesc = RelationGetDescr(cstate->conflictRel);
+
+				ExecClearTuple(conflictslot);
+
+				newvalues = conflictslot->tts_values;
+				nulls = conflictslot->tts_isnull;
+
+				for (int i = 0; i < tupdesc->natts; i++)
+				{
+					Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+
+					if (att->attisdropped)
+					{
+						newvalues[i] = (Datum) 0;
+						nulls[i] = true;
+						continue;
+					}
+
+					j++;
+					nulls[i] = false;
+
+					switch (j)
+					{
+						case 1:
+							newvalues[i] = ObjectIdGetDatum(conflict_relOId);
+							break;
+
+						case 2:
+							newvalues[i] = CStringGetTextDatum(cstate->filename ? cstate->filename : "STDIN");
+							break;
+
+						case 3:
+							newvalues[i] = Int64GetDatum((int64) cstate->cur_lineno);
+							break;
+
+						case 4:
+							newvalues[i] = CStringGetTextDatum(cstate->line_buf.data);
+							break;
+
+						default:
+							elog(ERROR, "COPY CONFLICT_TABLE must have exactly 4 attributes");
+							break;
+					}
+				}
+
+				/* Build the virtual tuple. */
+				ExecStoreVirtualTuple(conflictslot);
+
+				conflict_mstate->ps.state->es_processed = 0;
+
+				ExecInsert(cstate->mtcontext,
+						   conflict_mstate->resultRelInfo,
+						   conflictslot, conflict_mstate->canSetTag,
+						   NULL, NULL, NULL);
+
+				cstate->num_conflicts =
+					cstate->num_conflicts + conflict_mstate->ps.state->es_processed;
+
+				pgstat_progress_update_param(PROGRESS_COPY_TUPLES_SKIPPED,
+											 (cstate->num_conflicts + cstate->num_errors));
+			}
+
+			continue;
 		}
 
 		/* Determine the partition to insert the tuple into */
@@ -1513,7 +1696,58 @@ CopyFrom(CopyFromState cstate)
 	ExecCloseResultRelations(estate);
 	ExecCloseRangeTableRelations(estate);
 
+	/* do away with our snapshots */
+	UnregisterSnapshot(estate->es_snapshot);
+	UnregisterSnapshot(estate->es_crosscheck_snapshot);
+
 	FreeExecutorState(estate);
+
+	/*
+	 * This code path should be aligned with the resource release/destruction
+	 * performed by ExecutorFinish and ExecutorEnd on the EState.
+	 */
+	if (cstate->opts.on_conflict == ONCONFLICT_TABLE)
+	{
+		MemoryContext tmpcontext;
+		ModifyTableState *on_conflict_mtstate = cstate->mtcontext->mtstate;
+
+		if (cstate->num_conflicts > 0 &&
+			cstate->opts.log_verbosity >= COPY_LOG_VERBOSITY_DEFAULT)
+			ereport(NOTICE,
+					errmsg_plural("%" PRIu64 " row was saved to conflict table \"%s\" due to unique constraint violation",
+								  "%" PRIu64 " rows were saved to conflict table \"%s\" due to unique constraint violation",
+								  cstate->num_conflicts,
+								  cstate->num_conflicts,
+								  RelationGetRelationName(cstate->conflictRel)));
+
+		/* Execute AFTER STATEMENT insertion triggers */
+		ExecASInsertTriggers(cstate->mtcontext->estate,
+							 on_conflict_mtstate->rootResultRelInfo,
+							 on_conflict_mtstate->mt_transition_capture);
+
+		on_conflict_mtstate->mt_done = true;
+
+		/* Close/release resources associated with copy conflict_table */
+		tmpcontext = MemoryContextSwitchTo(cstate->mtcontext->estate->es_query_cxt);
+
+		cstate->mtcontext->estate->es_finished = true;
+
+		/* Handle queued AFTER triggers */
+		AfterTriggerEndQuery(cstate->mtcontext->estate);
+
+		ExecResetTupleTable(cstate->mtcontext->estate->es_tupleTable, false);
+		ExecCloseResultRelations(cstate->mtcontext->estate);
+		ExecCloseRangeTableRelations(cstate->mtcontext->estate);
+
+		/* do away with our snapshots */
+		UnregisterSnapshot(cstate->mtcontext->estate->es_snapshot);
+		UnregisterSnapshot(cstate->mtcontext->estate->es_crosscheck_snapshot);
+
+		/* Must switch out of context before destroying it */
+		MemoryContextSwitchTo(tmpcontext);
+
+		FreeExecutorState(cstate->mtcontext->estate);
+	}
 
 	return processed;
 }
@@ -1633,6 +1867,43 @@ BeginCopyFrom(ParseState *pstate,
 	}
 	else
 		cstate->escontext = NULL;
+
+	if (cstate->opts.on_conflict == ONCONFLICT_TABLE)
+	{
+		Oid			conflictRelid;
+		RangeVar   *relvar;
+		List	   *relname_list;
+
+		Assert(cstate->opts.on_conflictRel != NULL);
+
+		relname_list = stringToQualifiedNameList(cstate->opts.on_conflictRel, NULL);
+		relvar = makeRangeVarFromNameList(relname_list);
+
+		/*
+		 * Before inserting tuples into the CONFLICT_TABLE, we first check its
+		 * lock status. If the table is already heavily locked, the subsequent
+		 * COPY FROM (ON_CONFLICT TABLE) could hang waiting for the lock. To
+		 * avoid this, we use RVR_NOWAIT and report an error immediately if
+		 * the CONFLICT_TABLE cannot be locked.
+		 */
+		conflictRelid = RangeVarGetRelidExtended(relvar,
+												 RowExclusiveLock,
+												 RVR_NOWAIT,
+												 RangeVarCallbackForCopyConflictTable,
+												 NULL);
+
+		if (RelationGetRelid(cstate->rel) == conflictRelid)
+			ereport(ERROR,
+					errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					errmsg("cannot use relation \"%s\" for COPY on_conflict error saving while copying data to it",
+						   cstate->opts.on_conflictRel));
+
+		cstate->conflictRel = table_open(conflictRelid, NoLock);
+
+		CopyFromConflictTableCheck(cstate);
+
+		/* We will do CONFLICT_TABLE permission check later */
+	}
 
 	if (cstate->opts.on_error == COPY_ON_ERROR_SET_NULL)
 	{
@@ -1960,6 +2231,9 @@ EndCopyFrom(CopyFromState cstate)
 
 	pgstat_progress_end_command();
 
+	if (cstate->conflictRel != NULL)
+		table_close(cstate->conflictRel, NoLock);
+
 	MemoryContextDelete(cstate->copycontext);
 	pfree(cstate);
 }
@@ -1997,4 +2271,257 @@ ClosePipeFromProgram(CopyFromState cstate)
 						cstate->filename),
 				 errdetail_internal("%s", wait_result_to_str(pclose_rc))));
 	}
+}
+
+/*
+ * The conflict_table must be a plain table and must not contain generated
+ * columns, rules, or row-level security policies.
+ *
+ * The conflict_table must follow a specific schema: the first column is an OID
+ * (recording the COPY FROM source relation), the second is the COPY FILE path,
+ * the third is the line number, and the fourth contains the raw line content.
+ */
+static void
+CopyFromConflictTableCheck(CopyFromState cstate)
+{
+	int			valid_col_count = 0;
+	char	   *errdetail_msg = NULL;
+	Relation	relation = cstate->conflictRel;
+	TupleDesc	tupDesc = RelationGetDescr(relation);
+
+	if (tupDesc->constr &&
+		(tupDesc->constr->has_generated_stored || tupDesc->constr->has_generated_virtual))
+		ereport(ERROR,
+				errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("cannot use relation \"%s\" for COPY on_conflict error saving",
+					   RelationGetRelationName(relation)),
+				errdetail("The conflict_table cannot have generated columns."));
+
+	if (relation->rd_rules || relation->rd_rel->relrowsecurity)
+		ereport(ERROR,
+				errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("cannot use relation \"%s\" for COPY on_conflict error saving",
+					   RelationGetRelationName(relation)),
+				relation->rd_rules ? errdetail("The conflict_table cannot have rules.")
+				: errdetail("The conflict_table cannot have row-level security policies."));
+
+	for (int i = 0; i < tupDesc->natts; i++)
+	{
+		Form_pg_attribute attr = TupleDescAttr(tupDesc, i);
+
+		/* Skip columns marked as dropped */
+		if (attr->attisdropped)
+			continue;
+
+		valid_col_count++;
+
+		/* Check types based on the effective column position */
+		switch (valid_col_count)
+		{
+			case 1:
+				if (attr->atttypid != OIDOID)
+					errdetail_msg = _("The first column of the conflict_table data type is not OID.");
+				break;
+			case 2:
+				if (attr->atttypid != TEXTOID)
+					errdetail_msg = _("The second column of the conflict_table data type is not TEXT.");
+				break;
+			case 3:
+				if (attr->atttypid != INT8OID)
+					errdetail_msg = _("The third column of the conflict_table data type is not BIGINT.");
+				break;
+			case 4:
+				if (attr->atttypid != TEXTOID)
+					errdetail_msg = _("The fourth column of the conflict_table data type is not TEXT.");
+				break;
+			default:
+				errdetail_msg = _("The conflict_table should only have four columns");
+				break;
+		}
+	}
+
+	if (valid_col_count != 4)
+		errdetail_msg = _("The conflict_table should only have four columns");
+
+	if (errdetail_msg)
+		ereport(ERROR,
+				errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("cannot use relation \"%s\" for COPY on_conflict error saving",
+					   RelationGetRelationName(relation)),
+				errdetail_internal("%s", errdetail_msg),
+				errhint("The conflict_table must contain exactly four columns with data types, in order: OID, TEXT, BIGINT, TEXT"));
+}
+
+/*
+ * Initialize executor infrastructure needed to insert rows into the
+ * conflict table during COPY FROM (ON_CONFLICT TABLE)
+ *
+ * Performs permission checks, builds a ResultRelInfo with open indexes,
+ * sets up snapshots and trigger state, and populates cstate->mtcontext
+ * with a ready-to-use ModifyTableState.
+ */
+static void
+CopyFromConflictTableInit(CopyFromState cstate)
+{
+	ModifyTableState *mtstate;
+	ModifyTable *node;
+	MemoryContext tmpcontext;
+	ParseState *pstate = make_parsestate(NULL);
+	EState	   *estate = CreateExecutorState();
+
+	cstate->mtcontext = palloc0_object(ModifyTableContext);
+
+	tmpcontext = MemoryContextSwitchTo(estate->es_query_cxt);
+
+	estate->es_output_cid = GetCurrentCommandId(true);
+	estate->es_snapshot = RegisterSnapshot(GetActiveSnapshot());
+	estate->es_crosscheck_snapshot = RegisterSnapshot(InvalidSnapshot);
+
+	/* Set up an AFTER-trigger statement context */
+	AfterTriggerBeginQuery();
+
+	/* permission check for conflict_table */
+	CopyConflictTablePermissionCheck(pstate, cstate->conflictRel);
+
+	node = makeNode(ModifyTable);
+	node->operation = CMD_INSERT;
+	node->canSetTag = true;
+	node->rootRelation = 0;
+	node->resultRelations = list_make1_int(1);
+	node->onConflictAction = ONCONFLICT_NONE;
+
+	/*
+	 * We need a ResultRelInfo so we can use the regular executor's
+	 * index-entry-making machinery.
+	 */
+	ExecInitRangeTable(estate, pstate->p_rtable, pstate->p_rteperminfos,
+					   bms_make_singleton(1));
+
+	/* Populate the ModifyTableState for inserting record to CONFLICT_TABLE */
+	mtstate = makeNode(ModifyTableState);
+	mtstate->ps.plan = (Plan *) node;
+	mtstate->ps.state = estate;
+
+	mtstate->operation = node->operation;
+	mtstate->canSetTag = node->canSetTag;
+	mtstate->mt_done = false;
+
+	mtstate->mt_nrels = 1;
+	mtstate->resultRelInfo = palloc_array(ResultRelInfo, mtstate->mt_nrels);
+
+	mtstate->rootResultRelInfo = mtstate->resultRelInfo;
+	ExecInitResultRelation(estate, mtstate->resultRelInfo,
+						   linitial_int(node->resultRelations));
+
+	/* Verify the named relation is a valid target for INSERT */
+	CheckValidResultRel(mtstate->resultRelInfo, node->operation,
+						node->onConflictAction, NIL);
+
+	mtstate->fireBSTriggers = true;
+	mtstate->mt_transition_capture =
+		MakeTransitionCaptureState(cstate->conflictRel->trigdesc,
+								   RelationGetRelid(cstate->conflictRel),
+								   CMD_INSERT);
+
+	/* TODO: Support cstate->conflictRel when it is a partitioned table */
+
+	/*
+	 * Open the table's indexes, if we have not done so already, so that we
+	 * can add new index entries for the inserted tuple.
+	 */
+	if (cstate->conflictRel->rd_rel->relhasindex &&
+		mtstate->resultRelInfo->ri_IndexRelationDescs == NULL)
+		ExecOpenIndices(mtstate->resultRelInfo, node->onConflictAction != ONCONFLICT_NONE);
+
+	MemoryContextSwitchTo(tmpcontext);
+
+	cstate->mtcontext->mtstate = mtstate;
+	cstate->mtcontext->estate = estate;
+}
+
+/*
+ * COPY (ON_CONFLICT TABLE) log COPY FROM unique constraint violation details to
+ * the CONFLICT_TABLE.  Obviously, the current user must have INSERT privileges
+ * on all columns of the CONFLICT_TABLE.
+ */
+static void
+CopyConflictTablePermissionCheck(ParseState *pstate, Relation rel)
+{
+	LOCKMODE	lockmode = RowExclusiveLock;
+	ParseNamespaceItem *nsitem;
+	RTEPermissionInfo *perminfo;
+	TupleDesc	tupDesc = RelationGetDescr(rel);
+	AclResult	aclresult;
+
+	/* Must have INSERT privilege on the conflict_table */
+	aclresult = pg_class_aclcheck(RelationGetRelid(rel), GetUserId(), ACL_INSERT);
+	if (aclresult != ACLCHECK_OK)
+		aclcheck_error(aclresult, get_relkind_objtype(get_rel_relkind(RelationGetRelid(rel))),
+					   RelationGetRelationName(rel));
+
+	nsitem = addRangeTableEntryForRelation(pstate, rel, lockmode,
+										   NULL, false, false);
+	perminfo = nsitem->p_perminfo;
+	perminfo->requiredPerms = ACL_INSERT;
+
+	/* Must have INSERT privilege on each column of the table */
+	for (int i = 0; i < tupDesc->natts; i++)
+	{
+		Bitmapset **bms;
+		int			attno;
+
+		CompactAttribute *attr = TupleDescCompactAttr(tupDesc, i);
+
+		if (attr->attisdropped)
+			continue;
+
+		attno = i + 1 - FirstLowInvalidHeapAttributeNumber;
+		bms = &perminfo->insertedCols;
+
+		*bms = bms_add_member(*bms, attno);
+
+	}
+	ExecCheckPermissions(pstate->p_rtable, list_make1(perminfo), true);
+}
+
+/*
+ * Callback to RangeVarGetRelidExtended().
+ *
+ * Checks the following:
+ *	- the relation specified is a table.
+ *	- the table is not a system table.
+ *
+ * If any of these checks fails then an error is raised.
+ */
+static void
+RangeVarCallbackForCopyConflictTable(const RangeVar *rv, Oid relid, Oid oldrelid,
+									 void *arg)
+{
+	HeapTuple	tuple;
+	Form_pg_class classform;
+	char		relkind;
+
+	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+	if (!HeapTupleIsValid(tuple))
+		return;
+
+	classform = (Form_pg_class) GETSTRUCT(tuple);
+	relkind = classform->relkind;
+
+	/* No system table modifications unless explicitly allowed. */
+	if (!allowSystemTableMods && IsSystemClass(relid, classform))
+		ereport(ERROR,
+				errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				errmsg("permission denied: \"%s\" is a system catalog",
+					   rv->relname));
+
+	/* The conflict_table must be a regular relation */
+	if (relkind != RELKIND_RELATION)
+		ereport(ERROR,
+				errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				errmsg("cannot use relation \"%s\" for COPY on_conflict error saving",
+					   rv->relname),
+				errdetail_relkind_not_supported(relkind));
+
+	ReleaseSysCache(tuple);
 }

@@ -825,6 +825,10 @@ ExecGetUpdateNewTuple(ResultRelInfo *relinfo,
  *		*insert_destrel is the relation where it was inserted.
  *		These are only set on success.
  *
+ *      If conflict_relOId is not NULL, it also checks whether a unique constraint
+ *      violation actually occurred for the ON CONFLICT DO NOTHING clause and, if so, sets
+ *      *conflict_relOId to the OID of that relation.
+ *
  *		This may change the currently active tuple conversion map in
  *		mtstate->mt_transition_capture, so the callers must take care to
  *		save the previous value to avoid losing track of it.
@@ -836,7 +840,8 @@ ExecInsert(ModifyTableContext *context,
 		   TupleTableSlot *slot,
 		   bool canSetTag,
 		   TupleTableSlot **inserted_tuple,
-		   ResultRelInfo **insert_destrel)
+		   ResultRelInfo **insert_destrel,
+		   Oid *conflict_relOId)
 {
 	ModifyTableState *mtstate = context->mtstate;
 	EState	   *estate = context->estate;
@@ -1120,6 +1125,9 @@ ExecInsert(ModifyTableContext *context,
 										   &conflictTid, &invalidItemPtr,
 										   arbiterIndexes))
 			{
+				if (conflict_relOId)
+					*conflict_relOId = RelationGetRelid(resultRelationDesc);
+
 				/* committed conflict tuple found */
 				if (onconflict == ONCONFLICT_UPDATE)
 				{
@@ -1581,7 +1589,7 @@ ExecForPortionOfLeftovers(ModifyTableContext *context,
 		AfterTriggerBeginQuery();
 		ExecSetupTransitionCaptureState(mtstate, estate);
 		fireBSTriggers(mtstate);
-		ExecInsert(context, resultRelInfo, leftoverSlot, false, NULL, NULL);
+		ExecInsert(context, resultRelInfo, leftoverSlot, false, NULL, NULL, NULL);
 		fireASTriggers(mtstate);
 		AfterTriggerEndQuery(estate);
 	}
@@ -2321,7 +2329,7 @@ ExecCrossPartitionUpdate(ModifyTableContext *context,
 	/* Tuple routing starts from the root table. */
 	context->cpUpdateReturningSlot =
 		ExecInsert(context, mtstate->rootResultRelInfo, slot, canSetTag,
-				   inserted_tuple, insert_destrel);
+				   inserted_tuple, insert_destrel, NULL);
 
 	/*
 	 * Reset the transition state that may possibly have been written by
@@ -4083,7 +4091,7 @@ ExecMergeNotMatched(ModifyTableContext *context, ResultRelInfo *resultRelInfo,
 				mtstate->mt_merge_action = action;
 
 				rslot = ExecInsert(context, mtstate->rootResultRelInfo,
-								   newslot, canSetTag, NULL, NULL);
+								   newslot, canSetTag, NULL, NULL, NULL);
 				mtstate->mt_merge_inserted += 1;
 				break;
 			case CMD_NOTHING:
@@ -4914,7 +4922,7 @@ ExecModifyTable(PlanState *pstate)
 					ExecInitInsertProjection(node, resultRelInfo);
 				slot = ExecGetInsertNewTuple(resultRelInfo, context.planSlot);
 				slot = ExecInsert(&context, resultRelInfo, slot,
-								  node->canSetTag, NULL, NULL);
+								  node->canSetTag, NULL, NULL, NULL);
 				break;
 
 			case CMD_UPDATE:
